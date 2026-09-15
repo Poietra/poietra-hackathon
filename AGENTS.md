@@ -130,6 +130,7 @@ Composition・Transition の具体的な保存形式や、ベジェ曲線の編�
 - 別の PC からも共同編集に参加できる共有 URL を用意する（発案者が確認）。
 - 共有環境は Cloudflare Workers に配置し、画面・WASM・フォントを Static Assets、API を Worker、Yjs の同期と保存を部屋ごとの SQLite Durable Object で扱う。開発 PC の起動に依存せず、別の PC から同じリンクで参加できる構成を優先した（2026-09-15）。Node.js サーバーはローカル開発用に残す。
 - 配置先は Yumaboda の Cloudflare アカウントとする（2026-09-15、発案者の指定）。`wrangler.jsonc` の `account_id` をこのアカウントに固定する。
+- 公開 URL は `https://poietra.com` とする（2026-09-16、発案者の指定）。同じアカウントの既存ドメインを、既存 Worker の Custom Domain に接続する。旧共有リンクと未同期のブラウザ内データへのアクセスを保つため `workers_dev: true` を維持し、部屋と素材の保存先は共用する。
 - 参加は推測困難なルーム ID を含む共有リンクを使う。リンクを知っている人は編集できる。選択・カーソルは在室者の表示に使い、再生位置は各ブラウザで独立させる。変更はプロパティ単位で同期し、取り消しは自分の操作を対象にする。
 - Furukawa（GitHub: `furukawa1020`）に描画・数式 Write・WebCodecs 書き出しを分担する。UI・同期との並行作業を可能にするため、`src/engine/render-contract.ts` に呼び出し口を固定する。担当範囲と完了条件は GitHub Issue に記載する。
 - Furukawa の WebGL2 Glow と共通 Canvas 描画を PR #4 で統合した（2026-09-15）。既存の `effect: 'none' | 'glow'` と `src/engine/painter-contract.ts` を使い、GPU非対応時はSVGとCanvas2Dへ戻る。MP4/WebMの保存・復号、中断と資源解放を検証した。UIへの接続は Hosi121 / Codex が担当し、次の独立作業として数式Writeの描画速度改善を Issue #5 でFurukawaに割り当てた。
