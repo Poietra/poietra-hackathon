@@ -159,7 +159,7 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
       ? ['選択した図形を上に弧を描いて動かして', '動きの開始を 100ms 遅らせて', '動き始めと終わりをなめらかにして']
       : selectedTransition
         ? ['登場を 200ms 早めて', '動きの開始を 100ms 遅らせて', '動き始めと終わりをなめらかにして']
-        : ['円をもう少し大きくして、黄色にして', '図形を中央に揃えて', '短い見出しのテキストを追加して'];
+        : ['円をもう少し大きくして、黄色にして', '星のイラストを生成して右上に置いて', '短い見出しのテキストを追加して'];
   const visibleMessages = messages;
   const addressingCodex = codexPrompt(prompt) !== null;
 

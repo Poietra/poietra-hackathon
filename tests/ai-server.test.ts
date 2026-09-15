@@ -4,14 +4,14 @@ import { applyChanges, initializeDocument, readProject } from '../shared/documen
 import { makeDemoProject } from '../shared/demo';
 import { validateProposalForApply } from '../shared/ai';
 
-const { parse, constructed } = vi.hoisted(() => ({ parse: vi.fn(), constructed: [] as unknown[] }));
-vi.mock('openai', () => ({ default: class { constructor(options: unknown) { constructed.push(options); } responses = { parse }; static APIError = class extends Error {}; } }));
+const { parse, generate, constructed } = vi.hoisted(() => ({ parse: vi.fn(), generate: vi.fn(), constructed: [] as unknown[] }));
+vi.mock('openai', () => ({ default: class { constructor(options: unknown) { constructed.push(options); } responses = { parse }; images = { generate }; static APIError = class extends Error {}; } }));
 import { AiRequestSchema, createEditProposal, type AiRequest } from '../server/ai';
 
 let doc: Y.Doc;
 const input: AiRequest = { roomId: 'ai-unit-test-room', sceneId: 'scene-1', compositionId: 'comp-1', transitionId: null, selectedIds: ['circle'], prompt: '円を中央に' };
 beforeEach(() => {
-  doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); constructed.length = 0;
+  doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); generate.mockReset(); constructed.length = 0;
   vi.spyOn(console, 'log').mockImplementation(() => {}); vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { doc.destroy(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -225,6 +225,80 @@ test('token usage across attempts and the bounded SDK client are recorded', asyn
   await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
   expect(JSON.parse(vi.mocked(console.log).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal', attempts: 2, usage: { input: 2200, cached: 1800, output: 90 } });
   expect(constructed.at(-1)).toMatchObject({ apiKey: 'test-key-never-sent', timeout: 60000, maxRetries: 1 });
+});
+
+const WEBP = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0x1a, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+const encodedWebp = Buffer.from(WEBP).toString('base64');
+const picture = { action: 'generateImage', ref: '@star', compositionId: 'comp-1', name: 'Star', prompt: 'a glowing yellow star sticker', size: 'landscape', transparent: true, x: 900, y: 200, width: 300 };
+const withPicture = (operations: object[] = []) => ({ status: 'completed', output_parsed: { message: '星を追加します。', operations: [picture, ...operations] } });
+function imageSink() {
+  const stored: Array<{ bytes: Uint8Array; mime: string }> = [];
+  return { stored, images: { model: 'test-image-model', quality: 'medium' as const, store: async (bytes: Uint8Array<ArrayBuffer>, mime: string) => { stored.push({ bytes, mime }); return `/api/rooms/ai-unit-test-room/images/${'a'.repeat(64)}`; } } };
+}
+
+test('generateImage produces the picture after validation and compiles it as an image object with the generated aspect ratio', async () => {
+  const { stored, images } = imageSink();
+  parse.mockResolvedValueOnce(withPicture([{ action: 'setState', compositionId: 'comp-2', objectId: '@star', property: 'visible', value: true }]));
+  generate.mockResolvedValueOnce({ data: [{ b64_json: encodedWebp }] });
+  const proposal = await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images });
+  expect(generate).toHaveBeenCalledTimes(1);
+  expect(generate.mock.calls[0][0]).toMatchObject({ model: 'test-image-model', prompt: picture.prompt, size: '1536x1024', quality: 'medium', background: 'transparent', output_format: 'webp', output_compression: 80, n: 1 });
+  expect(generate.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  expect(stored).toHaveLength(1); expect(stored[0].mime).toBe('image/webp'); expect(stored[0].bytes).toEqual(WEBP);
+  const object = proposal.changes.find(change => change.path[2] === 'objects')!.value as { kind: string; name: string; image: { src: string; width: number; height: number } };
+  expect(object).toMatchObject({ kind: 'image', name: 'Star', image: { src: `/api/rooms/ai-unit-test-room/images/${'a'.repeat(64)}`, width: 1536, height: 1024 } });
+  expect(proposal.changes.find(change => change.path[3] === 'comp-1' && change.path[4] === 'states')!.value).toMatchObject({ x: 900, y: 200, width: 300, height: 200, fill: 'none', strokeWidth: 0, visible: true });
+  expect(proposal.changes.find(change => change.path[3] === 'comp-2' && change.path[4] === 'states')!.value).toMatchObject({ visible: true });
+  expect(() => validateProposalForApply(doc, proposal)).not.toThrow();
+  expect(parse.mock.calls[0][0].input[0].content).toContain('generateImage creates a new image object');
+  expect(JSON.stringify(parse.mock.calls[0][0].text.format.schema)).toContain('generateImage');
+  expect(JSON.parse(vi.mocked(console.log).mock.calls.at(-1)![0])).toMatchObject({ event: 'ai_proposal', attempts: 1, images: 1 });
+});
+
+test('pictures are generated only after the proposal validates, so a repaired proposal pays for one picture', async () => {
+  const { images } = imageSink();
+  parse.mockResolvedValueOnce(withPicture([{ action: 'setState', compositionId: 'comp-1', objectId: 'missing', property: 'x', value: 1 }])).mockResolvedValueOnce(withPicture());
+  generate.mockResolvedValue({ data: [{ b64_json: encodedWebp }] });
+  const proposal = await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images });
+  expect(parse).toHaveBeenCalledTimes(2); expect(generate).toHaveBeenCalledTimes(1);
+  expect(generate.mock.invocationCallOrder[0]).toBeGreaterThan(parse.mock.invocationCallOrder[1]);
+  expect(proposal.changes.some(change => change.path[2] === 'objects')).toBe(true);
+});
+
+test('more pictures than allowed is a validation error the model can repair', async () => {
+  const { images } = imageSink();
+  parse.mockResolvedValueOnce(withPicture([{ ...picture, ref: '@b' }, { ...picture, ref: '@c' }])).mockResolvedValueOnce(withPicture());
+  generate.mockResolvedValue({ data: [{ b64_json: encodedWebp }] });
+  await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images });
+  expect(parse.mock.calls[1][0].input.at(-1).content).toContain('一度に生成できる画像は 2 枚まで');
+  expect(generate).toHaveBeenCalledTimes(1);
+});
+
+test('without an image store the model is told pictures are unavailable and none are generated', async () => {
+  parse.mockResolvedValueOnce(withPicture()).mockResolvedValueOnce({ status: 'completed', output_parsed: { message: '画像は追加できません。', operations: [] } });
+  const proposal = await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
+  expect(proposal.changes).toEqual([]); expect(generate).not.toHaveBeenCalled();
+  expect(parse.mock.calls[0][0].input[0].content).toContain('Generating or uploading images is unavailable');
+  expect(parse.mock.calls[1][0].input.at(-1).content).toContain('画像の生成はこのサーバーでは使えません');
+});
+
+test('an oversized picture is regenerated with stronger compression once, then rejected', async () => {
+  const { images, stored } = imageSink();
+  const huge = new Uint8Array(1024 * 1024 + 1); huge.set(WEBP);
+  parse.mockResolvedValueOnce(withPicture());
+  generate.mockResolvedValue({ data: [{ b64_json: Buffer.from(huge).toString('base64') }] });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images })).rejects.toThrow('1 MB を超えました');
+  expect(generate).toHaveBeenCalledTimes(2);
+  expect(generate.mock.calls.map(call => call[0].output_compression)).toEqual([80, 40]);
+  expect(stored).toHaveLength(0);
+});
+
+test('a slow proposal skips picture generation instead of outliving the room lock', async () => {
+  const { images } = imageSink();
+  let now = 1_000_000; vi.spyOn(Date, 'now').mockImplementation(() => now);
+  parse.mockImplementationOnce(async () => { now += 61_000; return withPicture(); });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images })).rejects.toThrow('時間内に画像を生成できませんでした');
+  expect(generate).not.toHaveBeenCalled();
 });
 
 test('both generations share one deadline signal and successful requests release its timer', async () => {

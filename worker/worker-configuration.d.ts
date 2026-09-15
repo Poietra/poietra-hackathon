@@ -5,6 +5,8 @@ interface __BaseEnv_Env {
 	AI_LIMIT: RateLimit;
 	ASSETS: Fetcher;
 	OPENAI_MODEL: "gpt-6-astra";
+	OPENAI_IMAGE_MODEL: "gpt-image-1";
+	OPENAI_IMAGE_QUALITY: "medium";
 	OPENAI_API_KEY: string;
 	ROOMS: DurableObjectNamespace<import("./index").ProjectRoom>;
 }
@@ -20,7 +22,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "OPENAI_MODEL" | "OPENAI_API_KEY">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "OPENAI_MODEL" | "OPENAI_IMAGE_MODEL" | "OPENAI_IMAGE_QUALITY" | "OPENAI_API_KEY">> {}
 }
 
 // Begin runtime types
