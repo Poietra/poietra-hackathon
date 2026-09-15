@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useEditor } from '../editor/context';
-import { CORNER_SIGNS, pointInRotatedBounds, resizeFromCorner, rotationFromPointer, worldToLocal, type Point, type ResizeCorner } from '../editor/geometry';
+import { CORNER_SIGNS, pointInRotatedBounds, rectangleContainsRotatedBounds, rectangleFromPoints, resizeFromCorner, rotationFromPointer, worldToLocal, type Point, type Rectangle, type ResizeCorner } from '../editor/geometry';
 import type { Frame } from '../engine/evaluate';
 import { defaultState, type ObjectKind, type ObjectState } from '../../shared/model';
 import { cn } from './utils';
 import { CanvasFrame, type CanvasPresentation } from './CanvasFrame';
+import './Stage.css';
 
 interface Gesture {
   pointer: number;
@@ -16,6 +17,7 @@ interface Gesture {
   transitionId?: string;
   objectId?: string;
   drawing?: ObjectKind;
+  marquee?: { initial: string[]; additive: boolean; active: boolean };
   transform?: ResizeCorner | 'rotate';
   initialState?: ObjectState;
   initialSize?: { width: number; height: number };
@@ -31,6 +33,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
   const gesture = useRef<Gesture | null>(null);
   const cursorTime = useRef(0);
   const [size, setSize] = useState({ width: 800, height: 450 });
+  const [marquee, setMarquee] = useState<Rectangle | null>(null);
   const [drawPreview, setDrawPreview] = useState<ObjectState | null>(null);
   const [painted, setPainted] = useState<CanvasPresentation | null>(null);
   useEffect(() => {
@@ -47,7 +50,9 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       store.undo();
       store.undoManager.clear(false, true);
     }
-    store.endGesture(); setDrawPreview(null);
+    if (current.marquee) { if (cancel) editor.setSelectedIds(current.marquee.initial); }
+    else store.endGesture();
+    setDrawPreview(null); setMarquee(null);
     if (surface.current?.hasPointerCapture(current.pointer)) surface.current.releasePointerCapture(current.pointer);
   }
 
@@ -99,30 +104,34 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     if (!canEdit || event.button !== 0 || gesture.current) return;
     // Pointer capture/preventDefault must not leave keyboard focus in the Inspector.
     event.currentTarget.focus({ preventScroll: true });
-    // Focusing commits a pending Inspector field before the gesture starts.
+    // Focusing commits pending Inspector fields on blur; start from that latest state.
     const currentScene = store.scene(scene.id);
-    const currentSelected = selectedObject ? currentScene.objects[selectedObject.id] : null;
     const start = point(event), target = event.target as Element;
     const base: Gesture = { pointer: event.pointerId, sceneId: scene.id, compositionId, start, undoBefore: store.undoManager.undoStack.at(-1) };
     const handle = target.closest('[data-path-handle]')?.getAttribute('data-path-handle') as 'c1' | 'c2' | null;
     const transform = target.closest('[data-transform-handle]')?.getAttribute('data-transform-handle') as Gesture['transform'];
-    if (handle && currentSelected) {
-      if (currentSelected.locked || (!transition && !stateEditing)) return;
-      gesture.current = { ...base, handle, objectId: currentSelected.id, transitionId: transition?.id };
-    } else if (transform && currentSelected) {
-      if (!stateEditing || currentSelected.locked) return;
-      const storedState = currentScene.compositions[compositionId]?.states[currentSelected.id];
+    if (handle && selectedObject) {
+      if (!currentScene.objects[selectedObject.id] || currentScene.objects[selectedObject.id].locked || (!transition && !stateEditing)) return;
+      gesture.current = { ...base, handle, objectId: selectedObject.id, transitionId: transition?.id };
+    } else if (transform && selectedObject) {
+      const currentObject = currentScene.objects[selectedObject.id];
+      if (!stateEditing || !currentObject || currentObject.locked) return;
+      const storedState = currentScene.compositions[compositionId]?.states[selectedObject.id];
       if (!storedState?.visible) return;
-      const storedBounds = renderer.objectBounds({ object: currentSelected, state: storedState, writeProgress: 1, order: 'together' });
+      const storedBounds = renderer.objectBounds({ object: currentObject, state: storedState, writeProgress: 1, order: 'together' });
       const stroke = Math.max(0, storedState.strokeWidth);
-      gesture.current = { ...base, objectId: currentSelected.id, transform, initialState: structuredClone(storedState), initialSize: { width: storedBounds.width - stroke, height: storedBounds.height - stroke } };
+      gesture.current = { ...base, objectId: selectedObject.id, transform, initialState: structuredClone(storedState), initialSize: { width: storedBounds.width - stroke, height: storedBounds.height - stroke } };
     } else if (tool !== 'select') {
       if (!stateEditing) return;
       gesture.current = { ...base, drawing: tool };
       setDrawPreview(defaultState(tool, { x: start.x, y: start.y, width: 1, height: 1 }));
     } else {
       const id = hitObject(start, target);
-      if (!id || !currentScene.objects[id]) { editor.setSelectedIds([]); return; }
+      if (!id || !currentScene.objects[id]) {
+        gesture.current = { ...base, marquee: { initial: [...selectedIds], additive: event.shiftKey, active: false } };
+        if (!event.shiftKey) editor.setSelectedIds([]);
+        event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); return;
+      }
       const object = currentScene.objects[id];
       const ids = event.shiftKey ? (selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]) : selectedIds.includes(id) ? selectedIds : [id];
       editor.setSelectedIds(ids);
@@ -150,6 +159,15 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     }
     if (performance.now() - cursorTime.current > 40) { cursorTime.current = performance.now(); store.presence({ sceneId: scene.id, compositionId, cursor: at }); }
     const current = gesture.current; if (!current || current.pointer !== event.pointerId) return;
+    if (current.marquee) {
+      // The threshold is in screen pixels, so zoom does not change click behavior.
+      if (!current.marquee.active && Math.hypot(at.x - current.start.x, at.y - current.start.y) < 4 * scale) return;
+      current.marquee.active = true;
+      const rectangle = rectangleFromPoints(current.start, at); setMarquee(rectangle);
+      const enclosed = displayedFrame.objects.filter(item => scene.objects[item.object.id] && item.state.visible && item.state.opacity > 0 && item.writeProgress > 0 && rectangleContainsRotatedBounds(rectangle, renderer.objectBounds(item), item.state)).map(item => item.object.id);
+      editor.setSelectedIds(current.marquee.additive ? [...new Set([...current.marquee.initial, ...enclosed])] : enclosed);
+      return;
+    }
     if (current.drawing) { setDrawPreview(preview(current.drawing, current.start, at, event.shiftKey)); return; }
     const currentScene = store.scene(current.sceneId);
     const currentObject = current.objectId ? currentScene.objects[current.objectId] : null;
@@ -211,6 +229,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       })}
       {visibleMotionPath && <g fill="none" stroke="#9292e7" strokeWidth={scale}><path d={`M${from!.x} ${from!.y} C${pathTrack!.path!.c1.x} ${pathTrack!.path!.c1.y} ${pathTrack!.path!.c2.x} ${pathTrack!.path!.c2.y} ${to!.x} ${to!.y}`} strokeDasharray={`${5*scale} ${4*scale}`} /><path d={`M${from!.x} ${from!.y} L${pathTrack!.path!.c1.x} ${pathTrack!.path!.c1.y} M${to!.x} ${to!.y} L${pathTrack!.path!.c2.x} ${pathTrack!.path!.c2.y}`} opacity="0.7" />{!selectedObject?.locked && (['c1','c2'] as const).map(key => <circle key={key} data-path-handle={key} cx={pathTrack!.path![key].x} cy={pathTrack!.path![key].y} r={5*scale} fill="#a8a6ff" stroke="#181820" strokeWidth={1.5*scale} className="bezier-handle" />)}</g>}
       {canEdit && stateEditing && statePath && <g transform={`rotate(${statePath.rotation} ${statePath.x} ${statePath.y})`} stroke="#9292e7" strokeWidth={scale}><path d={`M${statePath.x} ${statePath.y} L${statePath.x + statePath.path.c1.x} ${statePath.y + statePath.path.c1.y} M${statePath.x + statePath.width} ${statePath.y + statePath.height} L${statePath.x + statePath.path.c2.x} ${statePath.y + statePath.path.c2.y}`} fill="none" />{!selectedObject?.locked && (['c1','c2'] as const).map(key => <circle key={key} data-path-handle={key} cx={statePath.x + statePath.path[key].x} cy={statePath.y + statePath.path[key].y} r={5*scale} fill="#a8a6ff" className="bezier-handle" />)}</g>}
+      {marquee && <rect data-testid="selection-marquee" x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} fill="#9696eb" fillOpacity="0.12" stroke="#9696eb" strokeWidth={scale} />}
       {editor.peers.filter(peer => peer.clientId !== store.doc.clientID && peer.sceneId === scene.id && peer.compositionId === compositionId && peer.cursor).map(peer => <g key={peer.clientId} transform={`translate(${peer.cursor!.x} ${peer.cursor!.y}) scale(${scale})`}><path d="M0 0 L0 17 L5 12 L9 21 L12 19 L8 11 L16 11 Z" fill={peer.color} stroke="#15151b" strokeWidth="1"/><rect x="17" y="14" width={peer.name.length*6.5+12} height="20" rx="4" fill={peer.color}/><text x="23" y="28" fill="#15151b" fontSize="11" fontFamily="Arial">{peer.name}</text></g>)}
     </svg>
   </div></div>;

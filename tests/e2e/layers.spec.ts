@@ -61,7 +61,7 @@ test('linked rows retain actual front-to-back order even when another layer sits
   await open(page); await page.getByRole('button', { name: 'Composition 2', exact: true }).click();
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
   await page.getByRole('button', { name: 'Sigmoid path', exact: true }).click({ modifiers: ['Shift'] });
-  await page.getByRole('button', { name: 'Link objects', exact: true }).click();
+  await page.getByRole('button', { name: 'Group', exact: true }).click();
   await page.getByRole('button', { name: 'Sigmoid path', exact: true }).click();
   await page.getByRole('button', { name: 'Bring to front', exact: true }).click();
   await expect.poll(() => rowOrder(page)).toEqual(['sigmoid', 'equation', 'circle']);
@@ -69,5 +69,5 @@ test('linked rows retain actual front-to-back order even when another layer sits
   await page.getByRole('button', { name: 'Circle をロック', exact: true }).click();
   await page.getByRole('button', { name: 'Circle', exact: true }).click({ modifiers: ['Shift'] });
   await expect(page.getByRole('button', { name: '左揃え', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Link objects', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Group', exact: true })).toBeDisabled();
 });

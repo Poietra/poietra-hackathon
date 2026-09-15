@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { defaultState } from '../shared/model';
-import { localToWorld, pointInRotatedBounds, resizeFromCorner, rotationFromPointer, worldToLocal } from '../src/editor/geometry';
+import { localToWorld, pointInRotatedBounds, rectangleContainsRotatedBounds, rectangleFromPoints, resizeFromCorner, rotationFromPointer, worldToLocal } from '../src/editor/geometry';
 
 describe('canvas transforms', () => {
   it('selects empty areas of a rotated visual box without selecting its enclosing axis-aligned corners', () => {
@@ -37,5 +37,18 @@ describe('canvas transforms', () => {
     const result = resizeFromCorner(state, state, 'se', { x: 60, y: 10 }, true, false);
     expect(result.width! / result.height!).toBe(2);
     expect(rotationFromPointer(state, { x: 0, y: -100 }, { x: 81, y: -59 }, true)).toBe(60);
+  });
+});
+
+
+describe('marquee geometry', () => {
+  it('normalizes a drag in any direction', () => {
+    expect(rectangleFromPoints({ x: 100, y: 50 }, { x: 20, y: 150 })).toEqual({ x: 20, y: 50, width: 80, height: 100 });
+  });
+  it('requires the entire rotated visual box, not only its anchor or unrotated bounds', () => {
+    const state = { x: 100, y: 100, rotation: 45 }, bounds = { x: 50, y: 90, width: 100, height: 20 };
+    expect(rectangleContainsRotatedBounds({ x: 50, y: 50, width: 100, height: 100 }, bounds, state)).toBe(true);
+    expect(rectangleContainsRotatedBounds({ x: 40, y: 80, width: 120, height: 40 }, bounds, state)).toBe(false);
+    expect(rectangleContainsRotatedBounds({ x: 90, y: 90, width: 20, height: 20 }, bounds, state)).toBe(false);
   });
 });

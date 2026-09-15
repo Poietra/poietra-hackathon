@@ -56,7 +56,7 @@ test('linked objects move together and locked objects expose no transform handle
   await open(page);
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
   await page.getByRole('button', { name: 'Sigmoid path', exact: true }).click({ modifiers: ['Shift'] });
-  await page.getByRole('button', { name: 'Link objects', exact: true }).click();
+  await page.getByRole('button', { name: 'Group', exact: true }).click();
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
   const initialCircle = await origin(page), initialPath = await origin(page, 'sigmoid');
   await drag(page, shape(page), 35, -20);
