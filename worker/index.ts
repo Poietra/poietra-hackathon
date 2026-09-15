@@ -77,17 +77,35 @@ export class ProjectRoom extends DurableObject<Env> {
       initializeDocument(this.doc, makeDemoProject());
       this.compact();
     }
-    this.doc.on('update', (update: Uint8Array) => {
-      try {
-        // Synchronous SQL writes enter the output gate before changes are broadcast.
-        sql.exec('INSERT INTO updates (data) VALUES (?)', update);
+  }
+
+  private receiveUpdate(update: Uint8Array, socket: WebSocket) {
+    // Validate the wire encoding before it enters the persistent journal.
+    Y.decodeUpdate(update);
+    const outgoing: Uint8Array[] = [];
+    const collect = (integrated: Uint8Array) => outgoing.push(integrated);
+    this.doc.on('update', collect);
+    try {
+      this.ctx.storage.transactionSync(() => {
+        // Persist the received update, including structures waiting for missing
+        // dependencies. Those do not emit a Y.Doc update event yet.
+        this.ctx.storage.sql.exec('INSERT INTO updates (data) VALUES (?)', update);
+        Y.applyUpdate(this.doc, update, socket);
         this.updates++;
         if (this.updates >= 256) this.compact();
-      } catch { this.ctx.abort('Project storage failed'); }
+      });
+    } catch {
+      // Discard memory if storage/application failed; it must not diverge from
+      // the rolled-back journal. Clients reconnect to a freshly restored room.
+      this.ctx.abort('Project update could not be stored');
+      return;
+    } finally { this.doc.off('update', collect); }
+    // The SQL output gate confirms storage before any peer sees these changes.
+    for (const integrated of outgoing) {
       const message = encoding.createEncoder();
-      encoding.writeVarUint(message, 0); sync.writeUpdate(message, update);
+      encoding.writeVarUint(message, 0); sync.writeUpdate(message, integrated);
       this.broadcast(encoding.toUint8Array(message));
-    });
+    }
   }
 
   private compact() {
@@ -106,6 +124,23 @@ export class ProjectRoom extends DurableObject<Env> {
   }
   private presence(socket: WebSocket): Presence | null { return socket.deserializeAttachment() as Presence | null; }
   private allPresence() { return this.ctx.getWebSockets().flatMap(socket => { const value = this.presence(socket); return value?.state ? [value] : []; }); }
+
+  private updatePresence(socket: WebSocket, next: Presence) {
+    const previousOwners = this.ctx.getWebSockets().filter(other => other !== socket && this.presence(other)?.clientId === next.clientId);
+    // A reconnect can arrive before the runtime notices the old socket is gone.
+    // Only the newest clock owns the avatar; delayed frames/close events from the
+    // old connection must not remove the replacement's presence.
+    if (previousOwners.some(other => {
+      const previous = this.presence(other)!;
+      return previous.clock > next.clock || (previous.clock === next.clock && previous.state !== null);
+    })) return;
+    for (const previousOwner of previousOwners) {
+      const previous = this.presence(previousOwner)!;
+      previousOwner.serializeAttachment({ ...previous, state: null });
+    }
+    socket.serializeAttachment(next);
+    this.broadcast(presenceMessage([next]));
+  }
 
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket required' }, 426);
@@ -128,15 +163,15 @@ export class ProjectRoom extends DurableObject<Env> {
       if (type === 0) {
         const reply = encoding.createEncoder();
         encoding.writeVarUint(reply, 0);
-        sync.readSyncMessage(decoder, reply, this.doc, socket);
+        const syncType = decoding.readVarUint(decoder);
+        if (syncType === sync.messageYjsSyncStep1) sync.readSyncStep1(decoder, reply, this.doc);
+        else if (syncType === sync.messageYjsSyncStep2 || syncType === sync.messageYjsUpdate) this.receiveUpdate(decoding.readVarUint8Array(decoder), socket);
+        else throw new Error('Unknown sync message');
         if (encoding.length(reply) > 1) this.send(socket, encoding.toUint8Array(reply));
       } else if (type === 1) {
         const previous = this.presence(socket);
         const next = readPresenceUpdate(decoding.readVarUint8Array(decoder), previous);
-        if (next && next !== previous) {
-          socket.serializeAttachment(next);
-          this.broadcast(presenceMessage([next]));
-        }
+        if (next && next !== previous) this.updatePresence(socket, next);
       } else if (type === 3) this.send(socket, presenceMessage(this.allPresence()));
     } catch { socket.close(1003, 'Invalid document update'); }
   }

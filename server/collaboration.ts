@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { resolve } from 'node:path';
 import { initializeDocument } from '../shared/document';
 import { makeDemoProject } from '../shared/demo';
+import { presenceMessage, readPresenceUpdate, type Presence } from '../worker/presence';
 
 export const ROOM_PATTERN = /^[a-zA-Z0-9_-]{16,80}$/;
 const dataDirectory = resolve(process.env.POIETRA_DATA_DIR || '.data');
@@ -17,6 +18,7 @@ export class Room {
   readonly doc = new Y.Doc();
   readonly awareness = new Awareness(this.doc);
   readonly connections = new Map<WebSocket, Set<number>>();
+  private readonly presence = new Map<WebSocket, Presence>();
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly filename: string;
   aiBusy = false;
@@ -35,7 +37,7 @@ export class Room {
     });
     this.awareness.on('update', ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, socket: WebSocket | null) => {
       const owned = socket ? this.connections.get(socket) : null;
-      for (const client of added) owned?.add(client);
+      for (const client of [...added, ...updated]) owned?.add(client);
       for (const client of removed) owned?.delete(client);
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, 1);
@@ -50,7 +52,17 @@ export class Room {
       const temporary = `${this.filename}.tmp`;
       writeFileSync(temporary, Y.encodeStateAsUpdate(this.doc), { mode: 0o600 });
       renameSync(temporary, this.filename);
-    } catch (error) { console.error('Could not save project:', error instanceof Error ? error.message : 'Storage error'); }
+      return true;
+    } catch (error) { console.error('Could not save project:', error instanceof Error ? error.message : 'Storage error'); return false; }
+  }
+
+  dispose() {
+    if (this.connections.size || this.aiBusy || !this.persist()) return false;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+    this.awareness.destroy();
+    this.doc.destroy();
+    return true;
   }
 
   private broadcast(message: Uint8Array) {
@@ -77,12 +89,31 @@ export class Room {
           encoding.writeVarUint(reply, 0);
           sync.readSyncMessage(decoder, reply, this.doc, socket);
           if (encoding.length(reply) > 1 && socket.readyState === WebSocket.OPEN) socket.send(encoding.toUint8Array(reply));
-        } else if (type === 1) applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(decoder), socket);
+        } else if (type === 1) {
+          const previous = this.presence.get(socket) ?? null;
+          const next = readPresenceUpdate(decoding.readVarUint8Array(decoder), previous);
+          if (!next || next === previous) return;
+          const previousOwners = [...this.presence].filter(([other, presence]) => other !== socket && presence.clientId === next.clientId);
+          if (previousOwners.some(([, presence]) => presence.clock > next.clock || (presence.clock === next.clock && presence.state !== null))) return;
+          for (const [other, presence] of previousOwners) {
+            this.presence.set(other, { ...presence, state: null });
+            this.connections.get(other)?.delete(next.clientId);
+          }
+          this.presence.set(socket, next);
+          const clean = decoding.createDecoder(presenceMessage([next]));
+          decoding.readVarUint(clean);
+          applyAwarenessUpdate(this.awareness, decoding.readVarUint8Array(clean), socket);
+        } else if (type === 3) {
+          const reply = encoding.createEncoder(); encoding.writeVarUint(reply, 1);
+          encoding.writeVarUint8Array(reply, encodeAwarenessUpdate(this.awareness, [...this.awareness.getStates().keys()]));
+          socket.send(encoding.toUint8Array(reply));
+        }
       } catch { socket.close(1003, 'Invalid document update'); }
     });
     socket.on('close', () => {
       removeAwarenessStates(this.awareness, [...(this.connections.get(socket) ?? [])], null);
       this.connections.delete(socket);
+      this.presence.delete(socket);
       this.persist();
     });
     socket.on('error', () => socket.close());
@@ -93,7 +124,12 @@ export const rooms = new Map<string, Room>();
 export function getRoom(id: string): Room {
   if (!ROOM_PATTERN.test(id)) throw new Error('Invalid room');
   const existing = rooms.get(id);
-  if (existing) return existing;
-  if (rooms.size >= 100) throw new Error('Room limit reached');
+  if (existing) { rooms.delete(id); rooms.set(id, existing); return existing; }
+  if (rooms.size >= 100) {
+    // Bound active memory without preventing new projects after a long session.
+    // Disconnected rooms are persisted before eviction and restored on demand.
+    for (const [key, room] of rooms) if (room.dispose()) { rooms.delete(key); break; }
+    if (rooms.size >= 100) throw new Error('Room limit reached');
+  }
   const room = new Room(id); rooms.set(id, room); return room;
 }

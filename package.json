@@ -20,7 +20,9 @@
     "test": "vitest run",
     "test:core": "cargo test --manifest-path core/Cargo.toml",
     "test:e2e": "playwright test",
-    "test:export": "playwright test --config tests/e2e/export.config.ts"
+    "test:export": "playwright test --config tests/e2e/export.config.ts",
+    "test:ai": "playwright test --config tests/e2e/ai.config.ts",
+    "test:collaboration": "pnpm build:web && node tests/collaboration-worker.integration.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",
