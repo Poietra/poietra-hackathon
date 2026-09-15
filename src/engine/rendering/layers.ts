@@ -208,7 +208,7 @@ export class LayerCache {
     signal.throwIfAborted();
     const local = localObject(item);
     const hasGlow = item.state.effect === 'glow';
-    const key = JSON.stringify([item.object.kind, local.state, item.writeProgress, item.order, scale, hasGlow]);
+    const key = JSON.stringify([item.object.kind, item.object.image?.src, local.state, item.writeProgress, item.order, scale, hasGlow]);
     const id = item.object.id;
     const previous = this.entries.get(id);
     if (previous?.key === key) {

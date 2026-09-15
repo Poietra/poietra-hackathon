@@ -85,7 +85,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       const item = displayedFrame.objects[index];
       if (!item.state.visible || item.state.opacity <= 0 || item.writeProgress <= 0) continue;
       if (item.object.id === direct) return direct!;
-      if ((item.object.kind === 'text' || item.object.kind === 'equation') && pointInRotatedBounds(at, renderer.objectBounds(item), item.state)) return item.object.id;
+      if ((item.object.kind === 'text' || item.object.kind === 'equation' || item.object.kind === 'image') && pointInRotatedBounds(at, renderer.objectBounds(item), item.state)) return item.object.id;
     }
     return undefined;
   }
@@ -180,7 +180,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     } else if (current.transform && current.objectId && current.initialState && current.initialSize) {
       const patch = current.transform === 'rotate'
         ? { rotation: rotationFromPointer(current.initialState, current.start, at, event.shiftKey) }
-        : resizeFromCorner(current.initialState, current.initialSize, current.transform, { x: at.x - current.start.x, y: at.y - current.start.y }, event.shiftKey, currentObject?.kind === 'text' || currentObject?.kind === 'equation');
+        : resizeFromCorner(current.initialState, current.initialSize, current.transform, { x: at.x - current.start.x, y: at.y - current.start.y }, currentObject?.kind === 'image' ? !event.shiftKey : event.shiftKey, currentObject?.kind === 'text' || currentObject?.kind === 'equation');
       store.updateState(current.sceneId, current.compositionId, current.objectId, patch, false);
     } else {
       let dx = at.x - current.start.x, dy = at.y - current.start.y;
@@ -217,7 +217,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
         const b = renderer.objectBounds(item);
         const locked = !!scene.objects[item.object.id]?.locked;
         const editable = stateEditing && !locked && selectedIds.length === 1 && tool === 'select';
-        const resizable = editable && ['circle', 'rectangle', 'text', 'equation'].includes(item.object.kind);
+        const resizable = editable && ['circle', 'rectangle', 'text', 'equation', 'image'].includes(item.object.kind);
         return <g key={item.object.id} data-selection-id={item.object.id} transform={`rotate(${item.state.rotation} ${item.state.x} ${item.state.y})`}>
           <rect x={b.x} y={b.y} width={Math.max(1, b.width)} height={Math.max(1, b.height)} fill="none" stroke={locked ? '#7e7e87' : '#9696eb'} strokeWidth={scale} />
           {resizable && (Object.entries(CORNER_SIGNS) as [ResizeCorner, Point][]).map(([corner, sign]) => {

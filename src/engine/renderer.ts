@@ -7,11 +7,13 @@ import { embeddedFontStyles, measureText, prepareFonts } from './rendering/fonts
 import { textMarkup } from './rendering/text-markup';
 import { arrowHeadPath, arrowHeadProgress, numberlineTickPath, numberlineTickProgress, SHAPE_STYLE, shapeGeometry } from './rendering/shape-geometry';
 import { color, escapeXml, finite, number as n, safeId, unit } from './rendering/svg';
+import { prepareImages, preparedImage } from './rendering/images';
 
 let nextSvg = 0;
 
 /** Precompute local equation paths once per content change; frame rendering remains synchronous. */
 export async function prepareScene(scene: Scene): Promise<void> {
+  await prepareImages(scene);
   const equations = Object.values(scene.objects).filter(object => object.kind === 'equation');
   await prepareEquations(Object.values(scene.compositions).flatMap(composition => equations.flatMap(object => {
     const state = composition.states[object.id];
@@ -83,6 +85,13 @@ function shapeMarkup(item: RenderObject, prefix: string): string {
   const s = item.state, kind = item.object.kind, progress = unit(item.writeProgress);
   const draw = progress < 1 ? ` pathLength="1" stroke-dasharray="1" stroke-dashoffset="${n(1 - progress)}"` : '';
   if (kind === 'text') return textMarkup(item, prefix);
+  if (kind === 'image') {
+    const src = preparedImage(item.object.image?.src);
+    if (!src) return '';
+    const width = Math.abs(finite(s.width)), height = Math.abs(finite(s.height));
+    const x = -width / 2, y = -height / 2, radius = Math.max(0, Math.min(finite(s.cornerRadius), width / 2, height / 2));
+    return `<defs><clipPath id="${prefix}-image"><rect x="${n(x)}" y="${n(y)}" width="${n(width)}" height="${n(height)}" rx="${n(radius)}"/></clipPath><clipPath id="${prefix}-reveal"><rect x="${n(x)}" y="${n(y)}" width="${n(width * progress)}" height="${n(height)}"/></clipPath></defs><g clip-path="url(#${prefix}-reveal)"><image href="${escapeXml(src)}" x="${n(x)}" y="${n(y)}" width="${n(width)}" height="${n(height)}" preserveAspectRatio="none" clip-path="url(#${prefix}-image)"/><rect x="${n(x)}" y="${n(y)}" width="${n(width)}" height="${n(height)}" rx="${n(radius)}" fill="none"/></g>`;
+  }
   if (kind === 'equation') {
     const equation = getEquation(s.text);
     if (!equation) return textMarkup(item, prefix);

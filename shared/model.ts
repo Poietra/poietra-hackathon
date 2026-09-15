@@ -1,4 +1,5 @@
-export type ObjectKind = 'circle' | 'rectangle' | 'text' | 'equation' | 'path' | 'arrow' | 'numberline';
+import type { ImageAsset } from './images';
+export type ObjectKind = 'circle' | 'rectangle' | 'text' | 'equation' | 'path' | 'arrow' | 'numberline' | 'image';
 export type Easing = 'linear' | 'easeInOut' | 'easeIn' | 'easeOut';
 export type AnimationKind = 'move' | 'write' | 'fade' | 'grow' | 'none';
 export type Point = { x: number; y: number };
@@ -11,6 +12,7 @@ export interface SceneObject {
   order: number;
   groupId: string | null;
   locked: boolean;
+  image?: ImageAsset;
 }
 
 export interface ObjectState {
@@ -85,7 +87,7 @@ export type Selection = { kind: 'composition' | 'transition'; id: string };
 export type Segment = { kind: Selection['kind']; id: string; start: number; duration: number };
 
 export const COLORS = ['#d7d8e4', '#67c4d9', '#f4ce55', '#b5d396', '#ef8078', '#d5a3bd', '#8a8fe9', '#ffffff'];
-export const KINDS: Record<ObjectKind, string> = { circle: 'Circle', rectangle: 'Rectangle', text: 'Text', equation: 'Equation', path: 'Path', arrow: 'Arrow', numberline: 'Number line' };
+export const KINDS: Record<ObjectKind, string> = { circle: 'Circle', rectangle: 'Rectangle', text: 'Text', equation: 'Equation', path: 'Path', arrow: 'Arrow', numberline: 'Number line', image: 'Image' };
 export const EASINGS: Record<Easing, string> = { linear: 'Linear', easeInOut: 'Ease in out', easeIn: 'Ease in', easeOut: 'Ease out' };
 export const ANIMATIONS: Record<AnimationKind, string> = { move: 'Move', write: 'Write', fade: 'Fade', grow: 'Grow', none: 'Cut' };
 

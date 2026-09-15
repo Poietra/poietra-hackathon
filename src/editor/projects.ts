@@ -5,6 +5,7 @@ import * as decoding from 'lib0/decoding';
 import * as sync from 'y-protocols/sync';
 import { toShared } from '../../shared/document';
 import type { Project } from '../../shared/model';
+import { storeProjectImages } from './images';
 
 // Match the collaboration server's complete WebSocket message limit. JSON byte
 // size alone does not bound the extra identifiers in a Yjs update.
@@ -34,6 +35,7 @@ export function createProjectMessages(source: Y.Doc, project: Project) {
 export async function createProjectRoom(project: Project, signal?: AbortSignal): Promise<URL> {
   signal?.throwIfAborted();
   const room = crypto.randomUUID();
+  project = await storeProjectImages(project, room, signal);
   const doc = new Y.Doc();
   const provider = new WebsocketProvider(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/sync`, room, doc, { disableBc: true, connect: false });
   provider.awareness.setLocalState(null);
