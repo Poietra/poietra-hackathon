@@ -113,7 +113,7 @@ pnpm exec playwright test --config tests/e2e/export.config.ts
 - **描画**: 対象オブジェクトだけを透明な画像にし、GLSL の横・縦 Gaussian ぼかしと元画像の合成で Glow を描きます。強さと余白は SVG と同じ定義を参照します。Write・回転・不透明度・表示順を反映し、完成したフレームだけを出力 Canvas にコピーします。
 - **再利用と解放**: 位置・回転・不透明度だけの変化では画像を再利用します。画像キャッシュは painter ごとに 32 MiB まで。画像と Object URL は読み込み処理、キャッシュは `LayerCache`、GPU 資源は Glow renderer が所有し、それぞれ解放します。
 - **継続動作**: 出力 Canvas は 2D、WebGL2 は内部 Canvas で使います。WebGL2 非対応・context lost・GPU の描画失敗・大きすぎる画像では、既存 SVG と Canvas 2D に切り替えます。`backend` は現在の経路を返します。画像読み込みの失敗は呼び出し側へ返し、中断は `AbortError` になります。
-- **動画**: MP4 / WebM の各フレームを同じ painter で描きます。開始時点の Scene、出力サイズ、fps、進捗と中断の契約を維持します。Stage への Canvas 組み込みは UI 担当の範囲です。
+- **プレビューと動画**: 編集画面と MP4 / WebM の各フレームを同じ painter で描きます。プレビューは描画中の待機フレームを最新1枚にまとめ、描画済みの状態に選択判定を合わせます。動画は全フレームを描き、開始時点の Scene、出力サイズ、fps、進捗と中断の契約を維持します。
 
 ### 確認方法
 

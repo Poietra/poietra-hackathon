@@ -9,6 +9,7 @@ import { EditorStore, currentRoom } from './editor/store';
 import { loadKernel } from './engine/kernel';
 import * as renderer from './engine/renderer';
 import * as exporter from './engine/export';
+import { createFramePainter } from './engine/painter';
 import './styles.css';
 
 class Boundary extends Component<{ children: ReactNode }, { error: boolean }> {
@@ -19,4 +20,4 @@ class Boundary extends Component<{ children: ReactNode }, { error: boolean }> {
 
 const root = createRoot(document.getElementById('root')!);
 root.render(<div className="loading-screen"><img src="/poietra.svg" alt="Poietra"/><span>Opening your studio</span></div>);
-loadKernel().then(kernel => { const store = new EditorStore(currentRoom()); root.render(<StrictMode><Boundary><App store={store} kernel={kernel} renderer={renderer} exporter={exporter}/></Boundary></StrictMode>); }).catch(error => root.render(<div className="loading-screen"><h1>Poietra</h1><p>{error instanceof Error ? error.message : '読み込みに失敗しました。'}</p><button onClick={() => location.reload()}>再読み込み</button></div>));
+loadKernel().then(kernel => { const store = new EditorStore(currentRoom()); root.render(<StrictMode><Boundary><App store={store} kernel={kernel} renderer={renderer} exporter={exporter} createFramePainter={createFramePainter}/></Boundary></StrictMode>); }).catch(error => root.render(<div className="loading-screen"><h1>Poietra</h1><p>{error instanceof Error ? error.message : '読み込みに失敗しました。'}</p><button onClick={() => location.reload()}>再読み込み</button></div>));
