@@ -11,10 +11,10 @@ async function open(page: Page, room = crypto.randomUUID()) {
   await page.goto(`/?room=${room}`); await expect(page.getByText('Live', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
 }
-async function assistant(page: Page) { await page.getByRole('button', { name: 'Assistant', exact: true }).click(); }
+async function assistant(page: Page) { await page.getByRole('button', { name: 'Chat', exact: true }).click(); }
 async function send(page: Page, text = '円を中央にしてください') {
-  await page.getByRole('textbox', { name: 'AI への編集依頼' }).fill(text);
-  await page.getByRole('button', { name: '編集を依頼', exact: true }).click();
+  await page.getByRole('textbox', { name: 'チャットメッセージ' }).fill(`@codex ${text}`);
+  await page.getByRole('button', { name: '送信', exact: true }).click();
 }
 async function design(page: Page) { await page.getByRole('button', { name: 'Design', exact: true }).click(); }
 async function setX(page: Page, value: string) {
@@ -70,15 +70,15 @@ test('canceling then requesting again ignores the first response and keeps the n
   await send(page, '最初の依頼');
   await expect.poll(() => count).toBe(1);
   await page.getByRole('button', { name: '停止', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: 'AI への編集依頼' })).toHaveValue('最初の依頼');
+  await expect(page.getByRole('textbox', { name: 'チャットメッセージ' })).toHaveValue('@codex 最初の依頼');
   await send(page, '次の依頼'); await expect.poll(() => count).toBe(2);
-  await page.getByRole('textbox', { name: 'AI への編集依頼' }).fill('編集中の下書き');
+  await page.getByRole('textbox', { name: 'チャットメッセージ' }).fill('編集中の下書き');
   await fulfill(first, positionProposal(500, 245, '停止済みの応答')).catch(() => {});
   await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible();
   await fulfill(second, positionProposal(640, 245, '新しい応答'));
   await expect(page.getByText('新しい応答', { exact: true })).toBeVisible();
   await expect(page.getByText('停止済みの応答', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('textbox', { name: 'AI への編集依頼' })).toHaveValue('編集中の下書き');
+  await expect(page.getByRole('textbox', { name: 'チャットメッセージ' })).toHaveValue('編集中の下書き');
   await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
 });
 
@@ -107,12 +107,12 @@ test('an API failure can be retried, with no fake edit and no lost draft', async
     else return fulfill(route, positionProposal(640));
   });
   await send(page); await expect.poll(() => count).toBe(1);
-  await page.getByRole('textbox', { name: 'AI への編集依頼' }).fill('次の依頼の下書き');
+  await page.getByRole('textbox', { name: 'チャットメッセージ' }).fill('次の依頼の下書き');
   await fulfill(first, { error: '接続を再確認してください。' }, 503);
   await expect(page.getByRole('alert')).toContainText('接続を再確認');
   await expect(page.getByRole('button', { name: 'Apply edits' })).toHaveCount(0);
   await page.getByRole('button', { name: '再試行', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Apply edits' })).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'AI への編集依頼' })).toHaveValue('次の依頼の下書き');
+  await expect(page.getByRole('textbox', { name: 'チャットメッセージ' })).toHaveValue('次の依頼の下書き');
   await expect(page.getByRole('alert')).toHaveCount(0);
 });

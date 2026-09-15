@@ -67,8 +67,8 @@ test('native clipboard shortcuts paste in place and text fields keep normal clip
 
 test('selecting UI text keeps copy, cut and delete away from selected canvas objects', async ({ page }) => {
   await open(page, crypto.randomUUID());
-  await page.getByRole('button', { name: 'Assistant', exact: true }).click();
-  const results = await page.getByRole('heading', { name: 'Make it move.', exact: true }).evaluate(element => {
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  const results = await page.getByRole('heading', { name: 'Room chat', exact: true }).evaluate(element => {
     const selection = window.getSelection()!; const range = document.createRange(); range.selectNodeContents(element);
     selection.removeAllRanges(); selection.addRange(range);
     return ['copy', 'cut'].map(type => {

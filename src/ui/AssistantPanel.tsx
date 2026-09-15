@@ -1,33 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronRight, LoaderCircle, Sparkles, X } from 'lucide-react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ArrowUp, Check, ChevronRight, LoaderCircle, MessageCircle, Sparkles, X } from 'lucide-react';
 import { useEditor } from '../editor/context';
 import { proposalTargets, type ProposalTarget } from '../editor/ai-targets';
 import { validateProposalForApply, type EditProposal } from '../../shared/ai';
-import { trimAiHistory, type AiConversationTurn } from '../../shared/ai-conversation';
-import type { Selection } from '../../shared/model';
+import { chatHistory, codexPrompt, type ChatMessage as Message, type ChatScope } from '../../shared/chat';
+import { LOCAL_ORIGIN } from '../../shared/document';
 
-interface RequestScope { sceneId: string; selection: Selection; selectedIds: string[]; label: string }
-interface Message {
-  id: string; role: 'user' | 'assistant'; content: string; scope: RequestScope;
-  status?: 'pending' | 'complete' | 'failed' | 'cancelled';
-  proposal?: EditProposal; targets?: ProposalTarget[]; applied?: boolean; dismissed?: boolean;
-}
-interface PendingRequest { controller: AbortController; scope: RequestScope; prompt: string; messageId: string }
+interface PendingRequest { controller: AbortController; scope: ChatScope; prompt: string; messageId: string }
 
-export function AssistantPanel() {
+export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sceneId: string) => void; onEditMoment: () => void }) {
   const editor = useEditor();
-  const [messages, setMessages] = useState<Message[]>([]); const [prompt, setPrompt] = useState('');
+  const chat = editor.store.chat;
+  const messages = useSyncExternalStore(chat.subscribe, chat.snapshot);
+  const [prompt, setPrompt] = useState('');
   const [pending, setPending] = useState<PendingRequest | null>(null);
   const [available, setAvailable] = useState<boolean | null>(null); const [error, setError] = useState('');
   const [retry, setRetry] = useState<{ prompt: string; messageId: string } | null>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const bottom = useRef<HTMLDivElement>(null); const request = useRef<PendingRequest | null>(null);
   const currentScene = useRef(editor.scene.id); currentScene.current = editor.scene.id;
   const appliedIds = useRef(new Set<string>());
-  const messageState = useRef<Message[]>([]); const drafts = useRef(new Map<string, string>());
+  const drafts = useRef(new Map<string, string>());
 
-  function updateMessages(update: (previous: Message[]) => Message[]) {
-    messageState.current = update(messageState.current); setMessages(messageState.current);
-  }
   function updatePrompt(value: string) { drafts.current.set(currentScene.current, value); setPrompt(value); }
   function restoreDraft(active: PendingRequest) {
     if (!drafts.current.get(active.scope.sceneId)) drafts.current.set(active.scope.sceneId, active.prompt);
@@ -46,14 +40,18 @@ export function AssistantPanel() {
       finally { checking = false; }
     };
     void check(); const timer = setInterval(check, 15000);
-    return () => { active = false; clearInterval(timer); health.abort(); request.current?.controller.abort(); request.current = null; };
+    return () => { active = false; clearInterval(timer); health.abort(); if (request.current) { request.current.controller.abort(); chat.patch(request.current.messageId, { status: 'cancelled' }); } request.current = null; };
   }, []);
+  useEffect(() => {
+    if (!editor.store.snapshot().synced) return;
+    for (const message of messages) if (message.authorId === editor.store.chatAuthorId && message.status === 'pending' && message.id !== request.current?.messageId && !editor.peers.some(peer => peer.clientId === message.requestClientId)) chat.patch(message.id, { status: 'cancelled' });
+  }, [messages, chat, editor.store, editor.peers]);
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'nearest' }); }, [messages, pending, editor.scene.id]);
   useEffect(() => {
     const active = request.current;
     if (active && active.scope.sceneId !== editor.scene.id) {
       active.controller.abort(); request.current = null; setPending(null);
-      updateMessages(previous => previous.map(item => item.id === active.messageId ? { ...item, status: 'cancelled' } : item));
+      chat.patch(active.messageId, { status: 'cancelled' });
       restoreDraft(active); setError('Scene を切り替えたため、依頼を停止しました。');
     } else setError('');
     setPrompt(drafts.current.get(editor.scene.id) || ''); setRetry(null);
@@ -62,36 +60,42 @@ export function AssistantPanel() {
   function stop() {
     const active = request.current; if (!active) return;
     active.controller.abort(); request.current = null; setPending(null);
-    updateMessages(previous => previous.map(item => item.id === active.messageId ? { ...item, status: 'cancelled' } : item));
+    chat.patch(active.messageId, { status: 'cancelled' });
     restoreDraft(active); setRetry(null); setError('依頼を停止しました。編集内容はそのままです。');
   }
 
   async function send(value = prompt, retryMessageId?: string) {
-    const text = value.trim(); if (!text || request.current) return;
-    if (text.length > 3000) { setError('依頼は 3,000 文字以内で入力してください。'); return; }
-    if (!available) { setError('AI の接続を準備しています。編集はそのまま続けられます。'); return; }
+    const text = value.trim(); if (!text) return;
+    if (text.length > 3000) { setError('メッセージは 3,000 文字以内で入力してください。'); return; }
+    const aiPrompt = codexPrompt(text);
+    if (aiPrompt !== null && editor.viewingPlayback) { setError('「この場面を編集」で編集に戻ってから Codex に依頼してください。'); return; }
+    if (aiPrompt !== null && request.current) { setError('Codex の返答を待つか、現在の依頼を停止してください。'); return; }
+    if (aiPrompt === '') { setError('@codex の後に、頼みたいことを入力してください。'); return; }
+    if (aiPrompt !== null && !available) { setError('Codex の接続を準備しています。メンバーへのメッセージは送れます。'); return; }
+    if (aiPrompt !== null && editor.selectedIds.length > 100) { setError('Codex への依頼では、選択するオブジェクトを100個以内にしてください。'); return; }
     const selection = { ...editor.selection };
     const target = selection.kind === 'composition' ? editor.scene.compositions[selection.id]?.name : 'Transition';
     const names = editor.selectedIds.map(id => editor.scene.objects[id]?.name).filter(Boolean);
-    const scope: RequestScope = { sceneId: editor.scene.id, selection, selectedIds: [...editor.selectedIds], label: `${editor.scene.name} · ${target || 'Composition'}${names.length ? ` · ${names.join(', ')}` : ''}` };
-    const sceneMessages = messageState.current.filter(message => message.scope.sceneId === scope.sceneId);
-    const last = sceneMessages.at(-1);
-    const previousAttempt = retryMessageId ? sceneMessages.find(message => message.id === retryMessageId)
-      : last?.role === 'user' && (last.status === 'cancelled' || last.status === 'failed') && last.content === text ? last : undefined;
+    const scope: ChatScope = { sceneId: editor.scene.id, selection, selectedIds: editor.selectedIds.slice(0, 100), label: `${editor.scene.name} · ${target || 'Composition'}${names.length ? ` · ${names.join(', ')}` : ''}`.slice(0, 2000) };
+    const sceneMessages = chat.snapshot().filter(message => message.scope.sceneId === scope.sceneId);
+    const last = sceneMessages.filter(message => message.authorId === editor.store.chatAuthorId).at(-1);
+    const previousAttempt = retryMessageId ? sceneMessages.find(message => message.id === retryMessageId && message.authorId === editor.store.chatAuthorId)
+      : aiPrompt !== null && last?.role === 'user' && (last.status === 'cancelled' || last.status === 'failed') && last.content === text ? last : undefined;
     const messageId = previousAttempt?.id || crypto.randomUUID();
-    const history = trimAiHistory(sceneMessages.flatMap((message): AiConversationTurn[] => {
-      if (message.role === 'user') return message.status === 'complete' ? [{ role: 'user', content: message.content }] : [];
-      return [{ role: 'assistant', content: message.content, ...(message.proposal?.changes.length ? { proposalStatus: message.applied ? 'applied' as const : message.dismissed ? 'discarded' as const : 'proposed' as const } : {}) }];
-    }));
+    const history = chatHistory(chat.snapshot(), scope.sceneId, editor.store.chatAuthorId);
+    const userMessage: Message = { id: messageId, role: 'user', content: text, scope, status: aiPrompt === null ? 'complete' : 'pending', mentionsCodex: aiPrompt !== null,
+      requestClientId: editor.store.doc.clientID, authorId: editor.store.chatAuthorId, authorName: editor.store.userName.slice(0, 40), color: editor.store.color, createdAt: Date.now() };
+    // Only the sender starts inference. Receiving a synchronized mention never calls the API.
     const active: PendingRequest = { controller: new AbortController(), scope, prompt: text, messageId };
-    request.current = active; setPending(active); setError(''); setRetry(null);
+    if (aiPrompt !== null) { request.current = active; setPending(active); }
+    setError(''); setRetry(null);
     if (prompt.trim() === text) updatePrompt('');
-    const userMessage: Message = { id: messageId, role: 'user', content: text, scope, status: 'pending' };
-    updateMessages(previous => previousAttempt ? previous.map(item => item.id === messageId ? userMessage : item) : [...previous, userMessage]);
     try {
+      if (previousAttempt) chat.patch(messageId, { status: userMessage.status }); else chat.append(userMessage);
+      if (aiPrompt === null) return;
       const response = await fetch('/api/ai/propose', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: active.controller.signal,
-        body: JSON.stringify({ roomId: editor.store.roomId, sceneId: scope.sceneId, compositionId: editor.compositionId, transitionId: selection.kind === 'transition' ? selection.id : null, selectedIds: scope.selectedIds, prompt: text, history, supportsCompositionAppends: true }),
+        body: JSON.stringify({ roomId: editor.store.roomId, sceneId: scope.sceneId, compositionId: editor.compositionId, transitionId: selection.kind === 'transition' ? selection.id : null, selectedIds: scope.selectedIds, prompt: aiPrompt, history, supportsCompositionAppends: true }),
       });
       let data: EditProposal & { error?: string };
       try { data = await response.json(); }
@@ -102,24 +106,32 @@ export function AssistantPanel() {
       if (!data || typeof data.id !== 'string' || typeof data.message !== 'string' || !Array.isArray(data.changes) || !Number.isFinite(data.count)) throw new Error('編集案を読み取れませんでした。もう一度お試しください。');
       const scene = editor.store.project().scenes[scope.sceneId];
       if (!scene) throw new Error('編集対象の Scene が削除されています。');
-      const targets = proposalTargets(data, scene);
-      updateMessages(previous => [...previous.map(item => item.id === messageId ? { ...item, status: 'complete' as const } : item), { id: crypto.randomUUID(), role: 'assistant', content: data.message, proposal: data, scope, targets }]);
+      editor.store.doc.transact(() => {
+        chat.patch(messageId, { status: 'complete' });
+        chat.append({ id: crypto.randomUUID(), role: 'assistant', content: data.message, proposal: data, scope, replyTo: messageId, authorId: editor.store.chatAuthorId, authorName: 'Codex', color: '#a79bf3', createdAt: Date.now() });
+      });
     } catch (failure) {
+      if (aiPrompt === null) { setError('メッセージを保存できませんでした。もう一度お試しください。'); restoreDraft(active); }
       if (request.current === active && !active.controller.signal.aborted) {
-        updateMessages(previous => previous.map(item => item.id === messageId ? { ...item, status: 'failed' } : item));
+        chat.patch(messageId, { status: 'failed' });
         setError(failure instanceof Error ? failure.message : '接続に失敗しました。'); setRetry({ prompt: text, messageId });
       }
     } finally { if (request.current === active) { request.current = null; setPending(null); } }
   }
 
   function apply(message: Message) {
-    if (!message.proposal || message.applied || message.dismissed || appliedIds.current.has(message.id)) return;
+    message = chat.snapshot().find(item => item.id === message.id)!;
+    if (editor.viewingPlayback) { setError('編集に戻ってから適用してください。'); return; }
+    if (!message?.proposal || message.authorId !== editor.store.chatAuthorId || message.applied || message.dismissed || appliedIds.current.has(message.id)) return;
     if (message.scope.sceneId !== editor.scene.id) { setError('対象の Scene に戻って適用してください。'); return; }
     try {
       validateProposalForApply(editor.store.doc, message.proposal);
-      editor.store.applyProposal(message.proposal); appliedIds.current.add(message.id);
-      updateMessages(previous => previous.map(item => item.id === message.id ? { ...item, applied: true } : item));
-      const created = message.targets?.findLast(target => target.created && target.selection.kind === 'transition') ?? message.targets?.findLast(target => target.created);
+      const targets = proposalTargets(message.proposal, editor.scene);
+      editor.store.undoManager.stopCapturing();
+      try { editor.store.doc.transact(() => { editor.store.applyProposal(message.proposal!); chat.patch(message.id, { applied: true }); }, LOCAL_ORIGIN); }
+      finally { editor.store.undoManager.stopCapturing(); }
+      appliedIds.current.add(message.id);
+      const created = targets.findLast(target => target.created && target.selection.kind === 'transition') ?? targets.findLast(target => target.created);
       if (created) { editor.select(created.selection); editor.setSelectedIds(created.objectIds); }
       editor.notify('編集案を適用しました。Undo で戻せます'); setError(''); setRetry(null);
     } catch (failure) { setError(failure instanceof Error ? failure.message : '適用できませんでした。'); }
@@ -143,39 +155,47 @@ export function AssistantPanel() {
       : selectedTransition
         ? ['登場を 200ms 早めて', '動きの開始を 100ms 遅らせて', '動き始めと終わりをなめらかにして']
         : ['円をもう少し大きくして、黄色にして', '図形を中央に揃えて', '短い見出しのテキストを追加して'];
-  const visibleMessages = messages.filter(message => message.scope.sceneId === editor.scene.id);
+  const visibleMessages = messages;
+  const addressingCodex = codexPrompt(prompt) !== null;
 
   return <div className="assistant-panel">
-    <div className="assistant-heading"><span className="assistant-icon"><Sparkles size={18}/></span><div><h2>Make it move.</h2><p>あなたの意図を、ひとつずつ。</p></div></div>
-    <div className="assistant-messages" role="log" aria-label="AI との編集履歴" aria-live="polite">
-      {visibleMessages.length === 0 && <div className="assistant-welcome"><p>配置も、色も、動きのタイミングも。<br/>作りたい表現を話しかけてください。</p><div className="prompt-suggestions">{suggestions.map(text => <button key={text} onClick={() => updatePrompt(text)}><span>{text}</span><ChevronRight size={13}/></button>)}</div><small>変更内容を確認してから適用できます。</small></div>}
-      {visibleMessages.map(message => <div key={message.id} className={`chat-message ${message.role}`}>
-        <div className="chat-author">{message.role === 'user' ? 'You' : <><Sparkles size={12}/>Poietra</>}</div>
-        {message.role === 'user' && <small className="muted">{message.scope.label}</small>}<p>{message.content}</p>
+    <div className="assistant-heading"><span className="assistant-icon"><MessageCircle size={18}/></span><div><h2>Room chat</h2><p>みんなで相談。@codex で編集を依頼。</p></div></div>
+    <div className="assistant-messages" role="log" aria-label="共同編集チャット" aria-live="polite">
+      {visibleMessages.length === 0 && <div className="assistant-welcome"><p>この部屋のメンバーと、制作の相談を。<br/><strong>@codex</strong> で AI も会話に参加します。</p><div className="prompt-suggestions">{suggestions.map(text => <button key={text} onClick={() => updatePrompt(`@codex ${text}`)}><span>{text}</span><ChevronRight size={13}/></button>)}</div><small>AI の編集案は、依頼した人が確認して適用できます。</small></div>}
+      {visibleMessages.map(message => {
+        const own = message.authorId === editor.store.chatAuthorId;
+        const targetScene = editor.store.snapshot().project?.scenes[message.scope.sceneId];
+        const targets = message.proposal && targetScene ? proposalTargets(message.proposal, targetScene) : [];
+        return <div key={message.id} className={`chat-message ${message.role}`}>
+        <div className="chat-author">{message.role === 'user' ? <><span className="chat-avatar" style={{ background: message.color }}>{message.authorName.slice(0, 1)}</span>{message.authorName}{own && <small>You</small>}</> : <><Sparkles size={12}/>Codex</>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
+        {message.role === 'user' && <small className="muted">{message.scope.label}</small>}{message.scope.sceneId !== editor.scene.id && targetScene && <button className="chat-scene-link" onClick={() => onOpenScene(message.scope.sceneId)}>{targetScene.name} を開く<ChevronRight size={11}/></button>}<p>{message.content}</p>
+        {message.status === 'pending' && <small className="muted">Codex に依頼中…</small>}
         {message.status === 'cancelled' && <small className="muted">停止しました</small>}
-        {message.status === 'failed' && <small className="muted">送信できませんでした</small>}
+        {message.status === 'failed' && <small className="muted">Codex への依頼に失敗しました</small>}
+        {own && message.mentionsCodex && (message.status === 'failed' || message.status === 'cancelled') && <button className="chat-scene-link" onClick={() => { if (message.scope.sceneId !== editor.scene.id) onOpenScene(message.scope.sceneId); drafts.current.set(message.scope.sceneId, message.content); if (message.scope.sceneId === editor.scene.id) setPrompt(message.content); composer.current?.focus(); }}>依頼を入力欄に戻す</button>}
         {message.proposal && message.proposal.changes.length > 0 && <div className="proposal-card">
           <span>{message.proposal.count} 件の編集</span>
-          {message.applied ? <span className="applied"><Check size={13}/>Applied</span> : message.dismissed ? <span className="muted">Discarded</span> : <div>
-            <button className="primary-button small-button" onClick={() => apply(message)}>Apply edits</button>
-            <button className="icon-button" aria-label="編集案を破棄" onClick={() => updateMessages(previous => previous.map(item => item.id === message.id ? { ...item, dismissed: true } : item))}><X size={13}/></button>
+          {message.applied ? <span className="applied"><Check size={13}/>Applied</span> : message.dismissed ? <span className="muted">Discarded</span> : !own ? <span className="muted">依頼した人が適用できます</span> : message.scope.sceneId !== editor.scene.id ? <span className="muted">対象の Scene で適用できます</span> : <div>
+            <button className="primary-button small-button" disabled={editor.viewingPlayback} onClick={() => apply(message)}>Apply edits</button>
+            <button className="icon-button" aria-label="編集案を破棄" onClick={() => chat.patch(message.id, { dismissed: true })}><X size={13}/></button>
           </div>}
-          <div className="proposal-targets" aria-label="編集する対象">{message.targets?.map(target => {
+          <div className="proposal-targets" aria-label="編集する対象">{targets.map(target => {
             const exists = target.selection.kind === 'composition' ? editor.scene.compositions[target.selection.id] : editor.scene.transitions[target.selection.id];
-            return <div className="proposal-target" key={`${target.selection.kind}:${target.selection.id}`}><span>{target.label}</span><button className="subtle-button small-button" disabled={target.created && !exists} onClick={() => showTarget(target)}>{target.created && !exists ? '適用後に表示' : '対象を表示'}</button></div>;
+            return <div className="proposal-target" key={`${target.selection.kind}:${target.selection.id}`}><span>{target.label}</span><button className="subtle-button small-button" disabled={message.scope.sceneId !== editor.scene.id || target.created && !exists} onClick={() => showTarget(target)}>{target.created && !exists ? '適用後に表示' : '対象を表示'}</button></div>;
           })}</div>
         </div>}
-      </div>)}
-      {pending && <div className="assistant-thinking" title={pending.scope.label}><LoaderCircle size={13} className="loading-spinner"/><span>動きを考えています…</span><button onClick={stop}>停止</button></div>}
+      </div>; })}
+      {pending && <div className="assistant-thinking" title={pending.scope.label}><LoaderCircle size={13} className="loading-spinner"/><span>Codex が考えています…</span><button onClick={stop}>停止</button></div>}
       <div ref={bottom}/>
     </div>
     <div className="assistant-composer">
       {error && <p className="inline-error" role="alert">{error}{retry && !pending && <button className="text-button" onClick={() => void send(retry.prompt, retry.messageId)}>再試行</button>}</p>}
-      {available === false && !error && <p className="assistant-connection">AI の接続待ち</p>}
+      {editor.viewingPlayback && <p className="assistant-connection">AI への依頼・適用は編集画面で。<button className="text-button" onClick={onEditMoment}>この場面を編集</button></p>}
+      {available === false && !error && <p className="assistant-connection">Codex の接続待ち · メンバーとは会話できます</p>}
       <form onSubmit={event => { event.preventDefault(); void send(); }}>
-        <textarea aria-label="AI への編集依頼" placeholder="どんな動きにしますか？" value={prompt} onChange={event => updatePrompt(event.target.value)} maxLength={3000} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} rows={3}/>
-        <div className="composer-bottom"><span>{editor.selectedIds.length ? `${editor.selectedIds.length} selected` : editor.scene.name}</span><button className="send-button" aria-label="編集を依頼" disabled={!prompt.trim() || !!pending || available !== true} type="submit"><ArrowUp size={17}/></button></div>
-      </form><small>作り手が、最後のひと手間を。</small>
+        <textarea ref={composer} aria-label="チャットメッセージ" placeholder="メンバーに送信、@codex で AI に依頼" value={prompt} onChange={event => updatePrompt(event.target.value)} maxLength={3000} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} rows={3}/>
+        <div className="composer-bottom"><button className="mention-button" type="button" onClick={() => { updatePrompt(addressingCodex ? prompt : `@codex ${prompt}`); composer.current?.focus(); }}>@codex</button><span>{addressingCodex ? editor.scene.name : 'Everyone'}</span><button className="send-button" aria-label="送信" disabled={!prompt.trim() || addressingCodex && (!!pending || available !== true || editor.viewingPlayback)} type="submit"><ArrowUp size={17}/></button></div>
+      </form><small>Enter で送信 · Shift + Enter で改行</small>
     </div>
   </div>;
 }

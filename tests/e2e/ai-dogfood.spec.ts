@@ -12,11 +12,11 @@ type Request = { prompt: string; history: History[]; sceneId: string; compositio
 type Operations = z.infer<typeof EditProposalSchema>['operations'];
 const reply = (message: string): EditProposal => ({ id: crypto.randomUUID(), message, count: 0, changes: [] });
 const fulfill = (route: Route, body: object, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-const log = (page: Page) => page.getByRole('log', { name: 'AI との編集履歴', exact: true });
+const log = (page: Page) => page.getByRole('log', { name: '共同編集チャット', exact: true });
 const card = (page: Page, message: string) => log(page).locator('.chat-message.assistant').filter({ hasText: message }).locator('.proposal-card');
 async function send(page: Page, text: string) {
-  await page.getByRole('textbox', { name: 'AI への編集依頼', exact: true }).fill(text);
-  await page.getByRole('button', { name: '編集を依頼', exact: true }).click();
+  await page.getByRole('textbox', { name: 'チャットメッセージ', exact: true }).fill(`@codex ${text}`);
+  await page.getByRole('button', { name: '送信', exact: true }).click();
 }
 async function answered(page: Page, text: string) {
   await expect(log(page).locator('.chat-message.assistant > p').last()).toHaveText(text);
@@ -29,7 +29,7 @@ async function open(page: Page, room = crypto.randomUUID()) {
   await page.route('**/api/health', route => fulfill(route, { ok: true, ai: true }));
   await page.goto(`/?room=${room}`); await expect(page.getByText('Live', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
-  await page.getByRole('button', { name: 'Assistant', exact: true }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
   return room;
 }
 async function observe(page: Page, room: string) {
@@ -170,13 +170,13 @@ test('switching Scenes aborts pending work and keeps completed histories separat
   await page.getByRole('button', { name: 'Scene を追加', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'Scene 2', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
-  await expect(log(page).getByText('Scene応答1', { exact: true })).toHaveCount(0);
+  await expect(log(page).getByText('Scene応答1', { exact: true })).toBeVisible();
   await send(page, '別Sceneの条件'); await answered(page, 'Scene応答3');
   expect(requests[2].sceneId).not.toBe('scene-1'); expect(requests[2].history).toEqual([]);
   await fulfill(oldScenePending, reply('前Sceneの遅い応答')).catch(() => {});
   await page.getByRole('tab', { name: 'Scene 1', exact: true }).click();
   await expect(log(page).getByText('Scene応答1', { exact: true })).toBeVisible();
-  await expect(log(page).getByText('Scene応答3', { exact: true })).toHaveCount(0);
+  await expect(log(page).getByText('Scene応答3', { exact: true })).toBeVisible();
   await expect(log(page).getByText('前Sceneの遅い応答', { exact: true })).toHaveCount(0);
   await send(page, 'このSceneの条件で続けて'); await answered(page, 'Scene応答4');
   expect(requests[3].sceneId).toBe('scene-1');
