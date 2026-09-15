@@ -2,16 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeBlankScene } from '../shared/demo';
 import { defaultState, type Scene } from '../shared/model';
 import type { MotionKernel } from '../src/engine/kernel';
+import type { FramePainter } from '../src/engine/painter-contract';
 import type { ExportOptions } from '../src/engine/render-contract';
 
 const mocks = vi.hoisted(() => ({
-  probe: vi.fn(), prepare: vi.fn(), svg: vi.fn(), draw: vi.fn(),
+  probe: vi.fn(), prepare: vi.fn(), painter: vi.fn(), render: vi.fn(), dispose: vi.fn(),
   track: vi.fn(), add: vi.fn(), start: vi.fn(), finalize: vi.fn(), cancel: vi.fn(), close: vi.fn(),
   outputConfigs: [] as unknown[], sourceConfigs: [] as Array<{ codec: string; onEncoderConfig: (config: { codec: string }) => void }>,
 }));
 
-vi.mock('../src/engine/renderer', () => ({ prepareScene: mocks.prepare, frameToSvg: mocks.svg }));
-vi.mock('../src/engine/exporting/rasterize', () => ({ drawSvgFrame: mocks.draw }));
+vi.mock('../src/engine/renderer', () => ({ prepareScene: mocks.prepare }));
+vi.mock('../src/engine/painter', () => ({ createFramePainter: mocks.painter }));
 vi.mock('mediabunny', () => ({
   canEncodeVideo: mocks.probe,
   BufferTarget: class { buffer: ArrayBuffer | null = null; },
@@ -71,8 +72,8 @@ beforeEach(() => {
   mocks.sourceConfigs.length = 0;
   mocks.probe.mockResolvedValue(true);
   mocks.prepare.mockResolvedValue(undefined);
-  mocks.draw.mockResolvedValue(undefined);
-  mocks.svg.mockReturnValue('<svg/>');
+  mocks.render.mockResolvedValue(undefined);
+  mocks.painter.mockResolvedValue({ backend: 'webgl2', render: mocks.render, dispose: mocks.dispose });
   canvas = { width: 0, height: 0, getContext: vi.fn().mockReturnValue({}) };
   vi.stubGlobal('document', { createElement: vi.fn(() => canvas) });
   vi.stubGlobal('VideoEncoder', class {});
@@ -119,14 +120,17 @@ describe('exportScene', () => {
     expect(result).toMatchObject({ width: 640, height: 360, durationMs: 100, codec: 'avc1.42001f', extension: 'mp4', mimeType: 'video/mp4' });
     expect(result.blob.size).toBe(4);
     expect(mocks.prepare.mock.calls[0][0]).not.toBe(original);
-    expect(mocks.svg.mock.calls).toHaveLength(3);
-    for (const [frame] of mocks.svg.mock.calls) expect(frame.objects[0].state.fill).toBe('#abcdef');
+    expect(mocks.render.mock.calls).toHaveLength(3);
+    for (const [frame] of mocks.render.mock.calls) expect(frame.objects[0].state.fill).toBe('#abcdef');
     expect(mocks.add.mock.calls.map(call => call[0])).toEqual([0, 1 / 30, 2 / 30]);
     expect(mocks.probe).toHaveBeenCalledWith('avc', expect.objectContaining({ width: 640, height: 360 }));
     expect(progress[0]).toBe(0);
     expect(progress.at(-1)).toBe(1);
     expect(progress).toEqual([...progress].sort((a, b) => a - b));
     expect(mocks.finalize).toHaveBeenCalledOnce();
+    expect(mocks.painter).toHaveBeenCalledExactlyOnceWith(canvas);
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    expect(canvas.getContext).not.toHaveBeenCalled();
     expect(mocks.cancel).not.toHaveBeenCalled();
     expect(canvas.width).toBe(0);
     expect(canvas.height).toBe(0);
@@ -203,6 +207,7 @@ describe('exportScene', () => {
     expect(mocks.add).toHaveBeenCalledOnce();
     expect(mocks.cancel).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.dispose).toHaveBeenCalledOnce();
     expect(mocks.finalize).not.toHaveBeenCalled();
     expect(progress).not.toContain(1);
     expect(canvas.width).toBe(0);
@@ -244,14 +249,83 @@ describe('exportScene', () => {
     expect(canvas.width).toBe(0);
   });
 
-  it.each(['start', 'draw', 'add', 'finalize'] as const)('cleans up after a %s failure with an actionable error', async stage => {
+  it.each(['start', 'render', 'add', 'finalize'] as const)('cleans up after a %s failure with an actionable error', async stage => {
     mocks[stage].mockRejectedValueOnce(new Error('encoder unavailable'));
     const progress = vi.fn();
     await expect(exportScene(scene(), kernel, { format: 'mp4', fps: 30, onProgress: progress })).rejects.toThrow('失敗しました');
     expect(mocks.cancel).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.dispose).toHaveBeenCalledOnce();
     expect(canvas.width).toBe(0);
     expect(progress).not.toHaveBeenCalledWith(1);
+  });
+
+  it('releases the canvas when painter initialization fails before an encoder exists', async () => {
+    mocks.painter.mockRejectedValueOnce(new Error('No drawing context'));
+    await expect(exportScene(scene(), kernel, { format: 'mp4', fps: 30 })).rejects.toThrow('描画エンジンの準備');
+    expect(mocks.outputConfigs).toHaveLength(0);
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(canvas.width).toBe(0);
+  });
+
+  it('disposes a painter that finishes initialization after cancellation', async () => {
+    const initialization = deferred<FramePainter>();
+    mocks.painter.mockReturnValueOnce(initialization.promise);
+    const controller = new AbortController();
+    const promise = exportScene(scene(), kernel, { format: 'mp4', fps: 30, signal: controller.signal });
+    const rejected = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(mocks.painter).toHaveBeenCalledOnce());
+    controller.abort();
+    initialization.resolve({ backend: 'webgl2', render: mocks.render, dispose: mocks.dispose });
+    await rejected;
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    expect(mocks.outputConfigs).toHaveLength(0);
+    expect(mocks.render).not.toHaveBeenCalled();
+    expect(canvas.width).toBe(0);
+  });
+
+  it('passes cancellation to an in-flight render and disposes its painter without encoding that frame', async () => {
+    mocks.render.mockImplementationOnce((_frame, { signal }: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('Render canceled', 'AbortError')), { once: true });
+    }));
+    const controller = new AbortController();
+    const promise = exportScene(scene(), kernel, { format: 'webm', fps: 30, signal: controller.signal });
+    const rejected = expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(mocks.render).toHaveBeenCalledOnce());
+    controller.abort();
+    await rejected;
+    expect(mocks.render.mock.calls[0][1].signal).toBe(controller.signal);
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+    expect(mocks.add).not.toHaveBeenCalled();
+    expect(mocks.finalize).not.toHaveBeenCalled();
+    expect(canvas.height).toBe(0);
+  });
+
+  it('stops export when the painter is disposed during a frame', async () => {
+    mocks.render.mockRejectedValueOnce(new DOMException('Painter disposed', 'AbortError'));
+    await expect(exportScene(scene(), kernel, { format: 'webm', fps: 30 })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    expect(mocks.cancel).toHaveBeenCalledOnce();
+    expect(mocks.add).not.toHaveBeenCalled();
+    expect(canvas.width).toBe(0);
+  });
+
+  it('uses the same export sequence when the painter falls back to Canvas 2D', async () => {
+    mocks.painter.mockResolvedValueOnce({ backend: 'canvas2d', render: mocks.render, dispose: mocks.dispose });
+    const result = await exportScene(scene(), kernel, { format: 'mp4', fps: 30 });
+    expect(result.blob.size).toBeGreaterThan(0);
+    expect(mocks.render).toHaveBeenCalledTimes(3);
+    expect(mocks.add).toHaveBeenCalledTimes(3);
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('releases the canvas and preserves an encoder failure even if painter disposal throws', async () => {
+    mocks.add.mockRejectedValueOnce(new Error('Original encoder failure'));
+    mocks.dispose.mockImplementationOnce(() => { throw new Error('Painter cleanup failure'); });
+    await expect(exportScene(scene(), kernel, { format: 'mp4', fps: 30 })).rejects.toThrow('Original encoder failure');
+    expect(mocks.dispose).toHaveBeenCalledOnce();
+    expect(canvas.width).toBe(0);
   });
 
   it('preserves the encoding error even if cancellation itself fails', async () => {

@@ -1,5 +1,10 @@
 import { escapeXml, number, unit } from './svg';
 
+// MathJax SVG uses 1000 units per em. Share the Write stroke with visual bounds.
+export const EQUATION_UNITS_PER_EM = 1000;
+export const EQUATION_WRITE_STROKE_UNITS = 18;
+const WRITE_FILL_START = 0.55;
+
 interface MathNode { tag: string; attributes: Record<string, string>; children: MathNode[] }
 export interface Equation { width: number; height: number; x: number; y: number; tree: MathNode; glyphs: number }
 const cache = new Map<string, Equation | null>();
@@ -72,8 +77,8 @@ export function equationMarkup(equation: Equation, progress: number, order: 'tog
     if (glyphProgress === 0) return '';
     if (glyphProgress === 1) return `<${node.tag}${attributes}/>`;
     // Each glyph is drawn along its own outline; fills settle in at the end of its stroke.
-    const fillProgress = unit((glyphProgress - 0.55) / 0.45);
-    return `<g fill-opacity="${number(fillProgress)}" stroke="currentColor" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"><${node.tag}${attributes} pathLength="1" stroke-dasharray="1" stroke-dashoffset="${number(1 - glyphProgress)}"/></g>`;
+    const fillProgress = unit((glyphProgress - WRITE_FILL_START) / (1 - WRITE_FILL_START));
+    return `<g fill-opacity="${number(fillProgress)}" stroke="currentColor" stroke-width="${EQUATION_WRITE_STROKE_UNITS}" stroke-linecap="round" stroke-linejoin="round"><${node.tag}${attributes} pathLength="1" stroke-dasharray="1" stroke-dashoffset="${number(1 - glyphProgress)}"/></g>`;
   };
   return render(equation.tree);
 }

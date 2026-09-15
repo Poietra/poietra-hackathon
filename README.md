@@ -80,7 +80,7 @@ Assistant は選択中のオブジェクト・Composition・Transition を対象
 
 ## 図形・数式と動画書き出し
 
-`renderer.ts` は共通の `Frame` を SVG に変換し、`export.ts` は開始時点の Scene をコピーして同じ評価・描画を各フレームに使います。数式変換・フォントは `rendering/`、ブラウザのコーデック判定・SVG の画像化・中断処理は `exporting/` に分離しています。編集モデルや UI に依存関係を追加していません。
+`renderer.ts` は `Frame` を SVG に変換し、`painter.ts` は完成フレームを Canvas に描きます。`export.ts` は開始時点の Scene をコピーし、各時刻の評価結果を同じ painter で描画してエンコードします。数式・フォント・SVG 画像の読み込みは `rendering/`、コーデック判定と書き出しの中断処理は `exporting/` に分けています。
 
 - 円、矩形、テキスト、数式、ベジェ曲線、矢印、数直線。回転・不透明度・塗り・線・角丸・glow に対応。
 - 数式は MathJax の SVG パス。Write は字形ごとの同時／順次描画。日本語と欧文テキストは同梱フォントの必要な部分を SVG に埋め込みます。
@@ -105,3 +105,37 @@ pnpm exec playwright test --config tests/e2e/export.config.ts
 - 通常テキストのサイズはブラウザでは読み込んだフォントで計測し、Node.js では近似値を返します。同梱フォントにない文字・絵文字は環境依存の表示です。
 - MP4 の寸法は偶数。サイズ比率を変えると余白を入れて Scene の比率を保ちます。WebM は最終フレームを丸ごと保持するため、端数のある Scene は最大1フレーム未満長くなり、実際の長さを返します。
 - エンコード・ファイル確定中の中断は、実行中の呼び出しが終わってから解放します。メモリ上で動画をまとめるため、まず短いハッカソン用動画を対象とします。
+
+## 共通 Canvas 描画と WebGL2 Glow
+
+`createFramePainter(canvas)`（[painter.ts](src/engine/painter.ts)）は、評価済みの `Frame` を Canvas に描きます。`prepareScene(scene)` を済ませ、同じ painter の `render(frame, { signal })` を直列に呼んでください。出力は Canvas の現在の寸法に合わせ、Scene の縦横比を保ちます。`dispose()` は描画中でも呼べ、繰り返し呼んでも安全です。契約は [painter-contract.ts](src/engine/painter-contract.ts) に従います。
+
+- **描画**: 対象オブジェクトだけを透明な画像にし、GLSL の横・縦 Gaussian ぼかしと元画像の合成で Glow を描きます。強さと余白は SVG と同じ定義を参照します。Write・回転・不透明度・表示順を反映し、完成したフレームだけを出力 Canvas にコピーします。
+- **再利用と解放**: 位置・回転・不透明度だけの変化では画像を再利用します。画像キャッシュは painter ごとに 32 MiB まで。画像と Object URL は読み込み処理、キャッシュは `LayerCache`、GPU 資源は Glow renderer が所有し、それぞれ解放します。
+- **継続動作**: 出力 Canvas は 2D、WebGL2 は内部 Canvas で使います。WebGL2 非対応・context lost・GPU の描画失敗・大きすぎる画像では、既存 SVG と Canvas 2D に切り替えます。`backend` は現在の経路を返します。画像読み込みの失敗は呼び出し側へ返し、中断は `AbortError` になります。
+- **動画**: MP4 / WebM の各フレームを同じ painter で描きます。開始時点の Scene、出力サイズ、fps、進捗と中断の契約を維持します。Stage への Canvas 組み込みは UI 担当の範囲です。
+
+### 確認方法
+
+`pnpm exec vite --port 5176` を起動し、[専用ページ](http://localhost:5176/tests/e2e/fixtures/effects.html) で再生位置と Glow を切り替えます。保存ボタンは動画をエンコード・デコードし、Canvas と同じ時刻のフレームを並べて表示します。
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm exec vite build --config tests/e2e/effects-build.config.ts
+pnpm exec playwright test --config tests/e2e/effects.config.ts
+pnpm exec playwright test --config tests/e2e/export.config.ts
+```
+
+本番ビルドの専用ページを検証する場合は `EFFECTS_PREVIEW=1` を設定します。比較画像・保存動画・JSON レポートは `test-results/effects/` に出力します。WebGL2 の実行、対象だけの Glow、日本語と数式の Write、変形、context lost、中断と資源解放、MP4 / WebM の復号フレームを確認します。
+
+### 描画時間
+
+2026-09-15、Windows / Chrome 152.0.7977.84（headless）、Intel UHD Graphics（ANGLE / Direct3D 11）、実際の `webgl2` 経路で測定しました。1280×720、図形・数式16個、8フレームのウォームアップ後に60フレームを計測しています。
+
+| 内容 | 平均 | 中央値 | 95パーセンタイル |
+| --- | ---: | ---: | ---: |
+| 移動・回転・数式4個の Write | 48.56 ms | 50.40 ms | 61.70 ms |
+| 移動・回転（画像を再利用） | 0.58 ms | 0.50 ms | 0.90 ms |
+
+値は `await painter.render(...)` の所要時間です。Write を含む結果は約20.6fps相当で、30fpsの目標は未達です。Write では字形が毎フレーム変わるため、SVG 画像の読み込みと GPU への転送が必要になります。移動・回転だけの場合は画像を再利用でき、この差が小さくなります。画面の実際のリフレッシュレートを測った値ではありません。

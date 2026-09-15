@@ -2,10 +2,11 @@ import { BufferTarget, CanvasSource, Mp4OutputFormat, Output, WebMOutputFormat }
 import { sceneSegments, type Scene } from '../../shared/model';
 import { evaluateScene } from './evaluate';
 import type { MotionKernel } from './kernel';
+import type { FramePainter } from './painter-contract';
 import type { ExportOptions, ExportResult } from './render-contract';
-import { frameToSvg, prepareScene } from './renderer';
+import { createFramePainter } from './painter';
+import { prepareScene } from './renderer';
 import { abortable, checkAbort, exportAbortError } from './exporting/abort';
-import { drawSvgFrame } from './exporting/rasterize';
 import { bitrateFor, environmentReason, findExportCodec } from './exporting/codecs';
 
 export { getExportCapabilities } from './exporting/codecs';
@@ -51,6 +52,7 @@ export async function exportScene(scene: Scene, kernel: MotionKernel, options: E
   // full interval. MP4 can preserve an independently shortened final frame.
   const durationMs = format === 'webm' ? frameCount / fps * 1000 : sceneDurationMs;
   let canvas: HTMLCanvasElement | undefined;
+  let painter: FramePainter | undefined;
   let source: CanvasSource | undefined;
   let output: Output<Mp4OutputFormat | WebMOutputFormat, BufferTarget> | undefined;
   let completed = false;
@@ -67,8 +69,10 @@ export async function exportScene(scene: Scene, kernel: MotionKernel, options: E
     canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    const context = canvas.getContext('2d', { alpha: false });
-    if (!context) throw new Error('描画用のキャンバスを作成できませんでした。ページを再読み込みしてお試しください。');
+    stage = '描画エンジンの準備';
+    // Wait for ownership before checking cancellation so an initialized painter is always disposed.
+    painter = await createFramePainter(canvas);
+    checkAbort(signal);
     const target = new BufferTarget();
     output = new Output({ format: format === 'mp4' ? new Mp4OutputFormat({ fastStart: 'in-memory' }) : new WebMOutputFormat(), target });
     let fullCodec = codec as string;
@@ -87,8 +91,7 @@ export async function exportScene(scene: Scene, kernel: MotionKernel, options: E
       checkAbort(signal);
       const timestamp = index / fps;
       const frame = evaluateScene(snapshot, timestamp * 1000, kernel);
-      const svg = frameToSvg(frame, { background: true, idPrefix: 'video-export' });
-      await drawSvgFrame(svg, context, width, height, snapshot.width, snapshot.height, frame.background, signal);
+      await painter.render(frame, { signal });
       checkAbort(signal);
       // Let an in-flight encoder call settle before canceling its output. In particular,
       // the first add initializes WebCodecs asynchronously; canceling it in parallel can
@@ -121,6 +124,7 @@ export async function exportScene(scene: Scene, kernel: MotionKernel, options: E
     }
     // Covers a source created before addVideoTrack/start fails as well.
     try { source?.close(); } catch { /* Preserve the original result/error. */ }
+    try { painter?.dispose(); } catch { /* Still release the canvas and preserve the original result/error. */ }
     if (canvas) { canvas.width = 0; canvas.height = 0; }
   }
 }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { drawSvgFrame } from '../src/engine/exporting/rasterize';
+import { withSvgImage } from '../src/engine/rendering/svg-image';
 
 let image: { onload: (() => void) | null; onerror: (() => void) | null; src: string };
 let load: 'ok' | 'error' | 'pending';
@@ -56,4 +57,43 @@ it('cancels an in-flight image decode and revokes its URL immediately', async ()
   expect(revoke).toHaveBeenCalledOnce();
   expect(image.src).toBe('');
   expect(context.drawImage).not.toHaveBeenCalled();
+});
+
+it('releases image resources and the abort listener if the drawing callback throws', async () => {
+  const controller = new AbortController();
+  const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+  const failure = new Error('Canvas draw failed');
+  await expect(withSvgImage('<svg/>', controller.signal, () => { throw failure; })).rejects.toBe(failure);
+  expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', expect.any(Function));
+  expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:test-frame');
+  expect(image.onload).toBeNull();
+  expect(image.onerror).toBeNull();
+  expect(image.src).toBe('');
+});
+
+it('revokes a created URL even if Image allocation fails', async () => {
+  vi.stubGlobal('Image', class { constructor() { throw new Error('Image allocation failed'); } });
+  const draw = vi.fn();
+  await expect(withSvgImage('<svg/>', undefined, draw)).rejects.toThrow('Image allocation failed');
+  expect(draw).not.toHaveBeenCalled();
+  expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:test-frame');
+});
+
+it('does not allocate resources for a pre-aborted image request', async () => {
+  const controller = new AbortController();
+  controller.abort(new Error('Custom abort reason'));
+  const draw = vi.fn();
+  await expect(withSvgImage('<svg/>', controller.signal, draw)).rejects.toMatchObject({ name: 'AbortError' });
+  expect(draw).not.toHaveBeenCalled();
+  expect(URL.createObjectURL).not.toHaveBeenCalled();
+});
+
+it('normalizes cancellation inside the synchronous callback to AbortError and releases the image', async () => {
+  const controller = new AbortController();
+  await expect(withSvgImage('<svg/>', controller.signal, () => {
+    controller.abort('Custom reason');
+    return 'Ignored after cancellation';
+  })).rejects.toMatchObject({ name: 'AbortError' });
+  expect(revoke).toHaveBeenCalledOnce();
+  expect(image.src).toBe('');
 });
