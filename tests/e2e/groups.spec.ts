@@ -63,7 +63,7 @@ test('two browsers group, drag together, set common timing, preview, ungroup and
     await timing(alice, 'Selected animation duration', '500');
     await timing(alice, 'Selected animation start', '100');
     await alice.getByRole('combobox', { name: 'Selected animation easing', exact: true }).selectOption('linear');
-    await alice.getByRole('button', { name: 'Apply Move', exact: true }).click();
+    await alice.getByRole('combobox', { name: 'Selected animation type', exact: true }).selectOption('move');
     await expect.poll(() => room.scene().transitions['transition-1'].tracks.second.type).toBe('move');
     for (const id of ['circle', 'second']) {
       expect(room.scene().transitions['transition-1'].tracks[id]).toEqual({ ...before.transitions['transition-1'].tracks[id], type: 'move', start: 100, duration: 500, easing: 'linear' });
@@ -119,14 +119,14 @@ test('common fields apply to explicit unlocked visible targets and add a missing
     await page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
     await expect(page.getByRole('list', { name: 'Animation targets', exact: true })).toContainText('Sigmoid path');
     await expect(page.getByRole('list', { name: 'Excluded animation targets', exact: true })).toContainText('ロック中');
-    await expect(page.getByRole('list', { name: 'Excluded animation targets', exact: true })).toContainText('片側のみ表示');
+    await expect(page.getByRole('list', { name: 'Animation targets', exact: true })).toContainText('Enter · Write');
     await timing(page, 'Selected animation duration', '400'); await timing(page, 'Selected animation start', '100');
     await page.getByRole('combobox', { name: 'Selected animation easing', exact: true }).selectOption('easeOut');
     await expect.poll(() => room.scene().transitions['transition-1'].tracks.sigmoid?.easing).toBe('easeOut');
     const tracks = room.scene().transitions['transition-1'].tracks;
     expect(tracks.sigmoid).toEqual(defaultTrack('sigmoid', { start: 100, duration: 400, easing: 'easeOut' }));
     expect(tracks.second).toEqual(before.transitions['transition-1'].tracks.second);
-    expect(tracks.equation).toEqual(before.transitions['transition-1'].tracks.equation);
+    expect(tracks.equation).toEqual({ ...before.transitions['transition-1'].tracks.equation, start: 100, duration: 400, easing: 'easeOut' });
     expect(tracks.circle).toEqual({ ...before.transitions['transition-1'].tracks.circle, start: 100, duration: 400, easing: 'easeOut' });
     expect(room.scene().compositions).toEqual(before.compositions);
     await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();

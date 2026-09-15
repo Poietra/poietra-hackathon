@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeBlankScene } from '../shared/demo';
-import { defaultState, type Scene } from '../shared/model';
+import { defaultState, type Project, type Scene } from '../shared/model';
 import type { MotionKernel } from '../src/engine/kernel';
 import type { FramePainter } from '../src/engine/painter-contract';
 import type { ExportOptions } from '../src/engine/render-contract';
@@ -41,7 +41,7 @@ vi.mock('mediabunny', () => ({
   },
 }));
 
-import { exportScene, getExportCapabilities } from '../src/engine/export';
+import { exportProject, exportScene, getExportCapabilities } from '../src/engine/export';
 
 const kernel: MotionKernel = {
   ease: value => value,
@@ -333,5 +333,61 @@ describe('exportScene', () => {
     mocks.cancel.mockRejectedValue(new Error('cleanup failure'));
     await expect(exportScene(scene(), kernel, { format: 'webm', fps: 30 })).rejects.toThrow('original encoder failure');
     expect(canvas.height).toBe(0);
+  });
+});
+
+
+describe('exportProject', () => {
+  function project(): Project {
+    const a = scene(100), b = scene(150); a.id = 'a'; b.id = 'b';
+    b.name = 'Portrait'; b.width = 720; b.height = 1280; b.background = '#ffffff';
+    b.compositions['test-comp-1'].states.circle.fill = '#ff0000';
+    return { version: 1, name: 'Film', sceneOrder: ['a', 'b'], scenes: { a, b } };
+  }
+  it('encodes all Scenes on one continuous clock and keeps their native geometry/background', async () => {
+    const output = await exportProject(project(), kernel, { format: 'mp4', fps: 30 });
+    expect(output).toMatchObject({ durationMs: 250, width: 1280, height: 720 });
+    expect(mocks.outputConfigs).toHaveLength(1); expect(mocks.add).toHaveBeenCalledTimes(8);
+    expect(mocks.render.mock.calls.slice(0, 3).every(([frame]) => frame.width === 1280 && frame.objects[0].state.fill === '#abcdef')).toBe(true);
+    expect(mocks.render.mock.calls.slice(3).every(([frame]) => frame.width === 720 && frame.height === 1280 && frame.background === '#ffffff' && frame.objects[0].state.fill === '#ff0000')).toBe(true);
+    expect(mocks.add.mock.calls.map(([time]) => time)).toEqual(Array.from({ length: 8 }, (_, index) => index / 30));
+    expect(mocks.add.mock.calls.at(-1)![1]).toBeCloseTo(0.25 - 7 / 30);
+  });
+  it('freezes all Scenes, their order and settings before asynchronous preparation', async () => {
+    const original = project(), before = structuredClone(original), pending = deferred<boolean>();
+    const signal = new AbortController();
+    mocks.probe.mockReturnValueOnce(pending.promise);
+    const options: ExportOptions = { format: 'mp4', fps: 30, signal: signal.signal };
+    const running = exportProject(original, kernel, options);
+    original.sceneOrder.reverse(); original.scenes.b.background = '#000000';
+    original.scenes.a.compositions['test-comp-1'].duration = 9000;
+    options.signal = AbortSignal.abort(); options.fps = 60;
+    pending.resolve(true);
+    expect((await running).durationMs).toBe(250);
+    expect(mocks.prepare.mock.calls.map(([value]) => value)).toEqual([before.scenes.a, before.scenes.b]);
+    expect(mocks.add).toHaveBeenCalledTimes(8);
+  });
+  it('cancels during a later Scene preparation without opening an encoder', async () => {
+    const pending = deferred<void>(), controller = new AbortController();
+    mocks.prepare.mockResolvedValueOnce(undefined).mockReturnValueOnce(pending.promise);
+    const running = exportProject(project(), kernel, { format: 'webm', fps: 30, signal: controller.signal });
+    const rejected = expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.waitFor(() => expect(mocks.prepare).toHaveBeenCalledTimes(2)); controller.abort(); await rejected;
+    pending.reject(new Error('late preparation')); await Promise.resolve();
+    expect(mocks.outputConfigs).toHaveLength(0);
+  });
+  it('retains every WebM frame across the cut and only extends the last interval', async () => {
+    const output = await exportProject(project(), kernel, { format: 'webm', fps: 30 });
+    expect(output.durationMs).toBeCloseTo(8 / 30 * 1000);
+    expect(mocks.add).toHaveBeenCalledTimes(8); expect(mocks.track).toHaveBeenCalledWith(expect.anything(), { frameRate: 30 });
+    expect(mocks.add.mock.calls.at(-1)![1]).toBeCloseTo(1 / 30);
+  });
+  it('validates empty projects, every duration and later Scene dimensions', async () => {
+    await expect(exportProject({ version: 1, name: '', sceneOrder: [], scenes: {} }, kernel, { format: 'mp4', fps: 30 })).rejects.toThrow('Scene');
+    const invalid = project(); invalid.scenes.b.width = 0;
+    await expect(exportProject(invalid, kernel, { format: 'mp4', fps: 30 })).rejects.toThrow('幅');
+    invalid.scenes.b.width = 720; invalid.scenes.b.compositions['test-comp-1'].duration = -1;
+    await expect(exportProject(invalid, kernel, { format: 'mp4', fps: 30 })).rejects.toThrow('再生時間');
+    expect(mocks.probe).not.toHaveBeenCalled();
   });
 });

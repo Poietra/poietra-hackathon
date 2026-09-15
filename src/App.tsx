@@ -16,6 +16,7 @@ import { AssistantPanel } from './ui/AssistantPanel';
 import { ProjectDialog } from './ui/ProjectDialog';
 import { PlaybackPanel } from './ui/PlaybackPanel';
 import { ExportDialog } from './ui/ExportDialog';
+import { ProjectPreview } from './ui/ProjectPreview';
 import { SceneTabs } from './ui/SceneTabs';
 import { ConnectionStatus } from './ui/ConnectionStatus';
 import { IconButton, Modal } from './ui/components';
@@ -24,6 +25,7 @@ import { copyObjects, parseObjects, serializeObjects, OBJECT_CLIPBOARD_MIME } fr
 
 export function App({ store, kernel, renderer, exporter, createFramePainter }: { store: EditorStore; kernel: MotionKernel; renderer: RendererContract; exporter: ExporterContract | null; createFramePainter?: PainterContract['createFramePainter'] }) {
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot);
+  const [projectPreviewOpen, setProjectPreviewOpen] = useState(false);
   const [sceneId, setSceneId] = useState('scene-1');
   const [requestedSelection, setRequestedSelection] = useState<Selection>({ kind: 'composition', id: 'comp-1' });
   const [selectedIds, setSelectedIds] = useState<string[]>([]); const [tool, setTool] = useState<Tool>('select');
@@ -57,7 +59,16 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   const localTime = transition ? clamp(playhead - (selectedSegment?.start || 0), 0, transition.duration) : 0;
 
   function notify(message: string) { if (toastTimer.current) clearTimeout(toastTimer.current); setToast(message); toastTimer.current = setTimeout(() => setToast(''), 4000); }
-  function undo() { const retained = store.undo(); if (retained > 0) notify(`共同編集者が変更した ${retained} 個の新規アニメーションを保持しました。`); }
+  function undo() {
+    const retained = store.undo(), objects = store.lastUndoPreservedObjects;
+    if (objects > 0) notify(`共同編集者が変更した ${objects} 個の新規オブジェクトと、その状態・アニメーションを保持しました。`);
+    else if (retained > 0) notify(`共同編集者が変更した ${retained} 個の新規アニメーションを保持しました。`);
+    else if (store.lastUndoPreservedDurations > 0) notify('共同編集者のアニメーションが収まるように、Transition の長さを保持しました。');
+  }
+  function redo() {
+    try { if (store.redo() > 0) notify('共同編集者のアニメーションが収まるように、Transition の長さを保持しました。'); }
+    catch (error) { notify(error instanceof Error ? error.message : '現在のアニメーションと競合するため、やり直せませんでした。'); }
+  }
   function select(next: Selection) { setPlaying(false); setTransportView(false); setTransitionSeeking(false); setRequestedSelection(next); setPathEditing(false); setPlayhead(scene ? sceneSegments(store.scene(scene.id)).find(part => part.id === next.id)?.start || 0 : 0); }
   function appendComposition() {
     if (!scene) return;
@@ -160,7 +171,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
       if (transportView && event.key === 'Escape') { event.preventDefault(); editMoment(); return; }
       if (event.metaKey || event.ctrlKey) {
         if (event.key.toLowerCase() === 'v') pasteInPlace.current = event.shiftKey;
-        if (event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? store.redo() : undo(); }
+        if (event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
         if (event.key.toLowerCase() === 'd' && scene && activeIds.length) { event.preventDefault(); setSelectedIds(store.duplicate(scene.id, compositionId, activeIds)); }
         if (event.key.toLowerCase() === 'a' && scene) { event.preventDefault(); setSelectedIds(Object.keys(scene.objects).filter(id => scene.compositions[compositionId]?.states[id]?.visible)); }
         if (event.key.toLowerCase() === 'g' && scene && activeIds.length) { event.preventDefault(); event.shiftKey ? store.unlink(scene.id, activeIds) : store.link(scene.id, activeIds); }
@@ -242,7 +253,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   return <Tooltip.Provider delay={450}><EditorContext.Provider value={context}><div className="studio" data-engine="wasm">
     <nav className="app-rail" aria-label="メインナビゲーション"><button className="brand" aria-label="Poietra の使い方" onClick={() => setHelpOpen(true)}><img src="/poietra.svg" alt=""/></button><div className="rail-actions"><IconButton label="Editor" active={rightTab === 'properties'} onClick={() => setRightTab('properties')}><BookOpen size={21}/></IconButton><IconButton label="AI assistant" active={rightTab === 'assistant'} onClick={() => setRightTab('assistant')}><Sparkles size={21}/></IconButton></div><div className="rail-bottom"><IconButton label="キーボードショートカット" onClick={() => setHelpOpen(true)}><Keyboard size={17}/></IconButton><button className="avatar own-avatar" style={{ background: store.color }} aria-label="プロフィールと共有" onClick={() => setShareOpen(true)}>{store.userName.startsWith('Guest ') ? store.userName.slice(-2) : store.userName.slice(0,2).toUpperCase()}</button></div></nav>
     <div className="project-heading"><button className="project-icon" aria-label="プロジェクトを開く" onClick={() => setProjectOpen(true)}>P</button><input aria-label="Project name" value={project.name} onChange={e => store.setProjectName(e.target.value)}/></div>
-    <header className="topbar"><SceneTabs project={project} sceneId={scene.id} onChange={changeScene} onNew={newScene} store={store} notify={notify}/><div className="topbar-spacer"/><div className="history-actions"><IconButton label="元に戻す (⌘Z)" disabled={!snapshot.canUndo} onClick={undo}><Undo2 size={15}/></IconButton><IconButton label="やり直す (⌘⇧Z)" disabled={!snapshot.canRedo} onClick={() => store.redo()}><Redo2 size={15}/></IconButton></div><ConnectionStatus snapshot={snapshot} onRetry={store.retryConnection}/><div className="participant-stack">{participants.slice(0,4).map(peer => <button className="avatar" key={peer.clientId} style={{ background: peer.color }} title={`${peer.name}${peer.clientId === store.doc.clientID ? '（あなた）' : ''}`} onClick={() => setShareOpen(true)}>{peer.name.startsWith('Guest ') ? peer.name.slice(-2) : peer.name.slice(0,2).toUpperCase()}</button>)}</div><button className="subtle-button share-button" onClick={() => setShareOpen(true)}><Share2 size={14}/><span>Share</span></button><button className="primary-button export-button" onClick={() => setExportOpen(true)} disabled={!exporter}><Film size={14}/><span>Export</span></button></header>
+    <header className="topbar"><SceneTabs project={project} sceneId={scene.id} onChange={changeScene} onNew={newScene} store={store} notify={notify}/><div className="topbar-spacer"/><div className="history-actions"><IconButton label="元に戻す (⌘Z)" disabled={!snapshot.canUndo} onClick={undo}><Undo2 size={15}/></IconButton><IconButton label="やり直す (⌘⇧Z)" disabled={!snapshot.canRedo} onClick={redo}><Redo2 size={15}/></IconButton></div><ConnectionStatus snapshot={snapshot} onRetry={store.retryConnection}/><div className="participant-stack">{participants.slice(0,4).map(peer => <button className="avatar" key={peer.clientId} style={{ background: peer.color }} title={`${peer.name}${peer.clientId === store.doc.clientID ? '（あなた）' : ''}`} onClick={() => setShareOpen(true)}>{peer.name.startsWith('Guest ') ? peer.name.slice(-2) : peer.name.slice(0,2).toUpperCase()}</button>)}</div><button className="subtle-button share-button" onClick={() => setShareOpen(true)}><Share2 size={14}/><span>Share</span></button><button className="subtle-button" aria-label="Preview project" onClick={() => { setPlaying(false); setProjectPreviewOpen(true); }}><Play size={14}/><span>Preview</span></button><button className="primary-button export-button" onClick={() => setExportOpen(true)} disabled={!exporter}><Film size={14}/><span>Export</span></button></header>
     <Sidebar onNewScene={newScene}/>
     <main className="editor-main"><div className={`workspace ${transition && !viewingPlayback ? 'transition-workspace' : ''}`}>
       <div className="workspace-heading"><div className="workspace-breadcrumb">{transition && !viewingPlayback ? <><span>{scene.compositions[transition.fromId]?.name}</span><ArrowRight size={17}/><span>{scene.compositions[transition.toId]?.name}</span></> : <><span>{viewingPlayback ? scene.name : scene.compositions[compositionId]?.name}</span><span className="muted workspace-subtitle">{viewingPlayback ? 'Preview' : 'Composition'}</span></>}</div>{transition && !viewingPlayback ? <button className={`subtle-button preview-button ${playing ? 'active' : ''}`} onClick={() => play('transition')}>{playing ? <Pause size={13} fill="currentColor"/> : <Play size={13} fill="currentColor"/>}Preview</button> : <span className="workspace-dimensions">{scene.width} × {scene.height}</span>}</div>
@@ -253,7 +264,8 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
     <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} project={project}/>
     <Modal open={shareOpen} onOpenChange={setShareOpen} title="A little better, together." description="同じリンクを開けば、このプロジェクトを一緒に編集できます。"><div className="share-link"><input aria-label="共有リンク" readOnly value={location.href} onFocus={e => e.currentTarget.select()}/><button className="primary-button" onClick={share}>{copied?<Check size={14}/>:<Copy size={14}/>}<span>{copied?'Copied':'Copy link'}</span></button></div><div className="share-participants"><h3>In this project <span>{participants.length}</span></h3>{participants.map(peer=><div key={peer.clientId}><span className="avatar" style={{ background:peer.color }}>{peer.name.slice(-2).toUpperCase()}</span><span>{peer.name}</span><small>{peer.clientId===store.doc.clientID?'You':'Editing'}</small></div>)}</div><label className="name-field">表示名<input value={name} onChange={e=>setName(e.target.value)} onBlur={()=>store.setName(name)} maxLength={40}/></label><div className="share-footer"><span><Link2 size={12}/>リンクを知っている人が編集できます</span><button className="text-button" onClick={()=>download(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}),`${project.name}.poietra.json`)}><Download size={13}/>Save project</button></div></Modal>
     <Modal open={helpOpen} onOpenChange={setHelpOpen} title="An idea. Then, a little motion." description="Composition で場面を作り、Transition でその間の動きを組み立てます。"><div className="help-steps"><div><span>01</span><h3>Shape the moment</h3><p>図形や数式を配置。プロパティから色や大きさを調整します。</p></div><div><span>02</span><h3>Find the movement</h3><p>次の Composition を作り、Transition で個々の動きを重ねます。</p></div><div><span>03</span><h3>Make it yours</h3><p>友人や AI と仕上げて、ひとつの動画に。</p></div></div><div className="keyboard-shortcuts">{[['Space','再生 / 停止'],['V / R / O / P','選択 / 四角 / 円 / パス'],['Drag / Shift + click','範囲選択 / 追加選択'],['↑ ↓ ← → / Shift','1 px / 10 px 移動'],['⌘ / Ctrl + C / X / V','コピー / 切り取り / 貼り付け'],['⌘ / Ctrl + ⇧V','同じ位置に貼り付け'],['⌘ / Ctrl + D','複製'],['⌘ / Ctrl + G / ⇧G','Group / Ungroup'],['⌘ / Ctrl + Z','元に戻す'],['Delete','この場面から非表示']].map(([key,action])=><div key={key}><span>{action}</span><kbd>{key}</kbd></div>)}</div></Modal>
-    {exporter && <ExportDialog open={exportOpen} onOpenChange={setExportOpen} exporter={exporter} scene={scene} kernel={kernel} name={project.name}/>} 
+    <ProjectPreview open={projectPreviewOpen} onOpenChange={setProjectPreviewOpen} project={project} renderer={renderer} kernel={kernel} createFramePainter={createFramePainter} onEdit={(id, next) => { changeScene(id); setRequestedSelection(next); setPlayhead(sceneSegments(store.scene(id)).find(segment => segment.id === next.id)?.start || 0); setRightTab('properties'); }}/>
+    {exporter && <ExportDialog open={exportOpen} onOpenChange={setExportOpen} exporter={exporter} scene={scene} project={project} kernel={kernel} name={project.name}/>}
   </div></EditorContext.Provider></Tooltip.Provider>;
 }
 

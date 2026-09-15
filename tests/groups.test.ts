@@ -15,13 +15,13 @@ function fixture() {
 function docFor(scene: Scene) { const doc = new Y.Doc(); const project = makeDemoProject(); project.scenes[scene.id] = scene; initializeDocument(doc, project); return doc; }
 
 describe('group animation edits', () => {
-  test('lists only selected, unlocked objects present at both endpoints and reports exclusions', () => {
+  test('includes selected unlocked Enter and Exit objects and reports hidden and locked exclusions', () => {
     const scene = fixture(); scene.objects.circle.locked = true;
     scene.objects.hidden = { ...scene.objects.circle, id: 'hidden', locked: false };
     for (const comp of Object.values(scene.compositions)) comp.states.hidden = defaultState('circle', { visible: false });
     const scope = groupAnimationTargets(scene, 'transition-1', ['second', 'circle', 'equation', 'hidden', 'missing', 'second']);
-    expect(scope.targets.map(target => target.object.id)).toEqual(['second']);
-    expect(scope.excluded.map(target => [target.object.id, target.reason])).toEqual([['circle', 'locked'], ['equation', 'one-sided'], ['hidden', 'hidden']]);
+    expect(scope.targets.map(target => target.object.id)).toEqual(['second', 'equation']);
+    expect(scope.excluded.map(target => [target.object.id, target.reason])).toEqual([['circle', 'locked'], ['hidden', 'hidden']]);
   });
 
   test('changes only explicit timing/type fields and preserves each path, order and endpoint state', () => {
@@ -32,7 +32,7 @@ describe('group animation edits', () => {
       const after = readProject(doc)!.scenes[scene.id];
       expect(after.compositions).toEqual(before.compositions);
       for (const id of ['circle', 'second']) expect(after.transitions['transition-1'].tracks[id]).toEqual({ ...before.transitions['transition-1'].tracks[id], type: 'move', duration: 400 });
-      expect(after.transitions['transition-1'].tracks.equation).toEqual(before.transitions['transition-1'].tracks.equation);
+      expect(after.transitions['transition-1'].tracks.equation).toEqual({ ...before.transitions['transition-1'].tracks.equation, type: 'move', duration: 400 });
       expect(after.transitions['transition-1'].tracks.circle.path).not.toEqual(after.transitions['transition-1'].tracks.second.path);
     } finally { doc.destroy(); }
   });

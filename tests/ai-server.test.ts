@@ -133,3 +133,25 @@ test('history is optional for old clients and exact upper limits are accepted', 
   const history = Array.from({ length: 24 }, () => ({ role: 'user', content: 'x'.repeat(1000) }));
   expect(AiRequestSchema.parse({ ...input, history }).history).toEqual(history);
 });
+
+test('Responses can create and animate a new object with a longer Transition in one guarded proposal', async () => {
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '新しい円を2秒で動かします。', operations: [
+    { action: 'createObject', ref: '@ball', compositionId: 'comp-1', name: 'New ball', kind: 'circle', x: 200, y: 500, width: 48, height: 48, fill: '#f4ce55', text: '', fontSize: 40 },
+    { action: 'setState', compositionId: 'comp-2', objectId: '@ball', property: 'visible', value: true },
+    { action: 'setState', compositionId: 'comp-2', objectId: '@ball', property: 'x', value: 1000 },
+    { action: 'setTrack', transitionId: 'transition-1', objectId: '@ball', property: 'duration', value: 2000 },
+    { action: 'setMotionPath', transitionId: 'transition-1', objectId: '@ball', path: { c1: { x: 400, y: 100 }, c2: { x: 800, y: 100 } } },
+    { action: 'setTransitionDuration', transitionId: 'transition-1', duration: 2000 },
+  ] } });
+  const proposal = await createEditProposal(doc, { ...input, prompt: '新しい黄色い円を作り、次のCompositionまで2秒かけて上に弧を描いて動かして' }, 'test-key-never-sent', 'test-model');
+  expect(proposal.changes).toHaveLength(5);
+  expect(JSON.stringify(proposal.changes)).not.toContain('@ball');
+  expect(proposal.changes.find(change => change.path[4] === 'tracks')?.value).toMatchObject({ type: 'move', duration: 2000 });
+  expect(() => validateProposalForApply(doc, proposal)).not.toThrow();
+  const body = parse.mock.calls[0][0];
+  expect(body).toMatchObject({ store: false, max_output_tokens: 6000, text: { format: { strict: true } } });
+  expect(JSON.stringify(body.text.format.schema)).toContain('createObject');
+  expect(JSON.stringify(body.text.format.schema)).toContain('setTransitionDuration');
+  expect(body.input[0].content).toContain('never rescales or clamps other tracks');
+  expect(body.input[0].content).toContain('Composition/Transition creation is unavailable');
+});

@@ -10,7 +10,7 @@ async function open(page: Page, room = crypto.randomUUID()) {
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
 }
 async function transition(page: Page) { await page.getByRole('button', { name: /^Transition [\d,]+ ms$/ }).click(); }
-const bar = (page: Page) => page.locator('.animation-bar').filter({ has: page.locator('.bar-name', { hasText: 'Move' }) }).first();
+const bar = (page: Page) => page.locator('[data-track-object-id="circle"] .animation-bar');
 async function field(page: Page, name: string, value: number) {
   const input = page.getByRole('spinbutton', { name, exact: true }); await input.fill(String(value)); await input.press('Tab');
 }
