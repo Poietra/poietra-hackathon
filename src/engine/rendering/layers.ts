@@ -4,13 +4,15 @@ import { frameToSvg, objectBounds } from '../renderer';
 import { GLOW_STYLE, type GlowRenderer } from '../effects/glow';
 import { prepareEquationDrawing, type EquationDrawing } from './equation-canvas';
 import { EQUATION_UNITS_PER_EM, getEquation, type Equation } from './equations';
+import { prepareShapeDrawing, type ShapeDrawing } from './shape-canvas';
+import { prepareTextDrawing, textDrawingKey, type TextDrawing } from './text-canvas';
 import { color, finite } from './svg';
 import { withSvgImage } from './svg-image';
 
 // One output pixel keeps antialiased edges inside the raster before rotation.
 const EDGE_PADDING_PIXELS = 1;
 const RGBA_BYTES_PER_PIXEL = 4;
-// Bound retained bitmaps and prepared equation source per painter, independently of video length.
+// Include retained rasters, text masks/work cells, and prepared geometry source.
 const RASTER_CACHE_BYTES = 32 * 1024 * 1024;
 
 export interface RasterLayer {
@@ -23,23 +25,40 @@ interface PreparedEquation {
   drawing: EquationDrawing | null;
 }
 
-interface CachedLayer extends RasterLayer {
+interface PreparedText {
   key: string;
-  bytes: number;
-  equation?: PreparedEquation;
+  drawing: TextDrawing | null;
 }
 
-interface LayerRequest {
+interface PreparedContent {
+  equation?: PreparedEquation;
+  shape?: ShapeDrawing;
+  text?: PreparedText;
+}
+
+interface CachedLayer extends RasterLayer, PreparedContent {
+  key: string;
+  bytes: number;
+}
+
+interface LayerRequest extends PreparedContent {
   item: RenderObject;
   key: string;
   scale: number;
   hasGlow: boolean;
-  equation?: PreparedEquation;
+  bounds: RasterBounds;
+  bytes: number;
 }
 
 function release(layer: RasterLayer) {
   layer.canvas.width = 0;
   layer.canvas.height = 0;
+}
+
+function disposeEntry(layer: CachedLayer, retainedText?: TextDrawing) {
+  release(layer);
+  const drawing = layer.text?.drawing;
+  if (drawing && drawing !== retainedText) drawing.dispose();
 }
 
 /** Only local appearance belongs in a raster; transforms apply after Glow. */
@@ -72,33 +91,41 @@ function equationFor(item: RenderObject, previous?: PreparedEquation): PreparedE
   return previous?.source === equation ? previous : { source: equation, drawing: prepareEquationDrawing(equation) };
 }
 
-function paintEquation(canvas: HTMLCanvasElement, request: LayerRequest, bounds: RasterBounds) {
-  const { source, drawing } = request.equation!;
-  const { pixelWidth, pixelHeight, sceneBounds } = bounds;
+function preparedPaint(request: LayerRequest): ((context: CanvasRenderingContext2D) => void) | undefined {
+  const { equation, shape, text, item } = request;
+  if (equation?.drawing) {
+    const { source, drawing } = equation;
+    return context => {
+      const fontScale = Math.max(0, finite(item.state.fontSize)) / EQUATION_UNITS_PER_EM;
+      context.scale(fontScale, fontScale);
+      context.translate(-source.x - source.width / 2, -source.y - source.height / 2);
+      drawing.paint(context, item.writeProgress, item.order, color(item.state.fill, '#d7d8e4'));
+    };
+  }
+  if (shape) return context => shape.paint(context, item);
+  const drawing = text?.drawing;
+  if (drawing) return context => drawing.paint(context, item);
+}
+
+function paintSource(canvas: HTMLCanvasElement, request: LayerRequest, paint: (context: CanvasRenderingContext2D) => void) {
+  const { pixelWidth, pixelHeight, sceneBounds } = request.bounds;
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
   const context = canvas.getContext('2d');
-  if (!context) throw new Error('数式を描画する Canvas を作成できませんでした。');
+  if (!context) throw new Error('オブジェクトを描画する Canvas を作成できませんでした。');
   context.resetTransform();
   context.clearRect(0, 0, pixelWidth, pixelHeight);
   context.save();
   try {
     context.scale(request.scale, request.scale);
     context.translate(-sceneBounds.x, -sceneBounds.y);
-    const fontScale = Math.max(0, finite(request.item.state.fontSize)) / EQUATION_UNITS_PER_EM;
-    context.scale(fontScale, fontScale);
-    context.translate(-source.x - source.width / 2, -source.y - source.height / 2);
-    drawing!.paint(context, request.item.writeProgress, request.item.order, color(request.item.state.fill, '#d7d8e4'));
+    paint(context);
   } finally { context.restore(); }
 }
 
 /** Null requests full-frame SVG fallback when an object cannot use the GPU route. */
-async function rasterizeLayer(request: LayerRequest, glow: GlowRenderer, signal: AbortSignal, equationCanvas: HTMLCanvasElement | undefined): Promise<CachedLayer | null> {
-  const bounds = rasterBounds(request.item, request.scale, request.hasGlow);
-  const { sceneBounds, pixelWidth, pixelHeight } = bounds;
-  const bytes = pixelWidth * pixelHeight * RGBA_BYTES_PER_PIXEL + (request.equation?.drawing?.sourceBytes ?? 0);
-  // Full-frame SVG clips oversized objects without allocating an unbounded cutout.
-  if (!Number.isFinite(bytes) || bytes > RASTER_CACHE_BYTES) return null;
+async function rasterizeLayer(request: LayerRequest, glow: GlowRenderer, signal: AbortSignal, sourceCanvas: HTMLCanvasElement | undefined): Promise<CachedLayer | null> {
+  const { sceneBounds, pixelWidth, pixelHeight } = request.bounds;
 
   function copySource(source: HTMLImageElement | HTMLCanvasElement): CachedLayer | null {
     if (glow.lost) return null;
@@ -113,7 +140,7 @@ async function rasterizeLayer(request: LayerRequest, glow: GlowRenderer, signal:
       const context = canvas.getContext('2d');
       if (!context) throw new Error('オブジェクトを描画する Canvas を作成できませんでした。');
       context.drawImage(request.hasGlow ? glow.canvas : source, 0, 0);
-      return { key: request.key, canvas, sceneBounds, bytes, equation: request.equation };
+      return { key: request.key, canvas, sceneBounds, bytes: request.bytes, equation: request.equation, shape: request.shape, text: request.text };
     } catch (error) {
       canvas.width = 0;
       canvas.height = 0;
@@ -121,9 +148,10 @@ async function rasterizeLayer(request: LayerRequest, glow: GlowRenderer, signal:
     }
   }
 
-  if (request.equation?.drawing && equationCanvas) {
-    paintEquation(equationCanvas, request, bounds);
-    return copySource(equationCanvas);
+  const paint = preparedPaint(request);
+  if (paint && sourceCanvas) {
+    paintSource(sourceCanvas, request, paint);
+    return copySource(sourceCanvas);
   }
   const frame: Frame = {
     background: 'transparent', width: sceneBounds.width, height: sceneBounds.height,
@@ -139,16 +167,16 @@ async function rasterizeLayer(request: LayerRequest, glow: GlowRenderer, signal:
 export class LayerCache {
   private readonly entries = new Map<string, CachedLayer>();
   private bytes = 0;
-  private equationCanvas?: HTMLCanvasElement;
+  private sourceCanvas?: HTMLCanvasElement;
 
   clear() {
-    for (const layer of this.entries.values()) release(layer);
+    for (const layer of this.entries.values()) disposeEntry(layer);
     this.entries.clear();
     this.bytes = 0;
-    if (this.equationCanvas) {
-      this.equationCanvas.width = 0;
-      this.equationCanvas.height = 0;
-      this.equationCanvas = undefined;
+    if (this.sourceCanvas) {
+      this.sourceCanvas.width = 0;
+      this.sourceCanvas.height = 0;
+      this.sourceCanvas = undefined;
     }
   }
 
@@ -156,16 +184,17 @@ export class LayerCache {
     for (const id of this.entries.keys()) if (!ids.has(id)) this.remove(id);
   }
 
-  private remove(id: string) {
+  private remove(id: string, retainedText?: TextDrawing) {
     const layer = this.entries.get(id);
     if (!layer) return;
     this.entries.delete(id);
     this.bytes -= layer.bytes;
-    release(layer);
+    disposeEntry(layer, retainedText);
   }
 
   private store(id: string, layer: CachedLayer) {
-    this.remove(id);
+    // Transfer the same prepared masks to the replacement raster without disposing them.
+    this.remove(id, layer.text?.drawing ?? undefined);
     while (this.bytes + layer.bytes > RASTER_CACHE_BYTES) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
@@ -188,14 +217,38 @@ export class LayerCache {
       this.entries.set(id, previous);
       return previous;
     }
+    const bounds = rasterBounds(local, scale, hasGlow);
+    const rasterBytes = bounds.pixelWidth * bounds.pixelHeight * RGBA_BYTES_PER_PIXEL;
+    // Full-frame SVG clips oversized objects without allocating an unbounded cutout.
+    if (!Number.isFinite(rasterBytes) || rasterBytes > RASTER_CACHE_BYTES) return null;
     const equation = equationFor(local, previous?.equation);
-    if (equation?.drawing) this.equationCanvas ??= document.createElement('canvas');
-    const layer = await rasterizeLayer({ item: local, key, scale, hasGlow, equation }, glow, signal, this.equationCanvas);
-    if (signal.aborted) {
-      if (layer) release(layer);
+    const shape = prepareShapeDrawing(local, previous?.shape) ?? undefined;
+    const geometryBytes = (equation?.drawing?.sourceBytes ?? 0) + (shape?.sourceBytes ?? 0);
+    if (rasterBytes + geometryBytes > RASTER_CACHE_BYTES) return null;
+    let text: PreparedText | undefined;
+    let stored = false;
+    try {
+      const textKey = textDrawingKey(local, scale);
+      if (textKey !== null) {
+        text = previous?.text?.key === textKey ? previous.text : {
+          key: textKey,
+          drawing: await prepareTextDrawing(local, scale, RASTER_CACHE_BYTES - rasterBytes - geometryBytes, signal),
+        };
+      }
       signal.throwIfAborted();
+      const bytes = rasterBytes + geometryBytes + (text?.drawing?.bytes ?? 0);
+      if (bytes > RASTER_CACHE_BYTES) return null;
+      if (equation?.drawing || shape || text?.drawing) this.sourceCanvas ??= document.createElement('canvas');
+      const layer = await rasterizeLayer({ item: local, key, scale, hasGlow, bounds, bytes, equation, shape, text }, glow, signal, this.sourceCanvas);
+      if (signal.aborted) {
+        if (layer) release(layer);
+        signal.throwIfAborted();
+      }
+      if (layer) { this.store(id, layer); stored = true; }
+      return layer;
+    } finally {
+      // A pending atlas is not owned by the cache until the complete layer is stored.
+      if (!stored && text?.drawing !== previous?.text?.drawing) text?.drawing?.dispose();
     }
-    if (layer) this.store(id, layer);
-    return layer;
   }
 }

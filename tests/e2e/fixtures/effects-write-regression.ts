@@ -24,13 +24,13 @@ SVGGeometryElement.prototype.getTotalLength = function () {
   return totalLength.call(this);
 };
 
-function canvas(width = WRITE_CASES.width, height = WRITE_CASES.height) {
+export function canvas(width = WRITE_CASES.width, height = WRITE_CASES.height) {
   const target = document.createElement('canvas'); target.width = width; target.height = height; return target;
 }
-function pixels(target: HTMLCanvasElement) { return target.getContext('2d')!.getImageData(0, 0, target.width, target.height); }
+export function pixels(target: HTMLCanvasElement) { return target.getContext('2d')!.getImageData(0, 0, target.width, target.height); }
 
 /** Restrict error statistics to the union of both glyph masks, so the empty stage cannot dilute missing ink. */
-function compareGlyphs(expected: ImageData, actual: ImageData) {
+export function compareGlyphs(expected: ImageData, actual: ImageData) {
   const differences: number[] = [];
   let expectedEnergy = 0, actualEnergy = 0, expectedInk = 0, actualInk = 0, absoluteError = 0, maximum = 0;
   let minX = expected.width, minY = expected.height, maxX = -1, maxY = -1;
@@ -71,7 +71,7 @@ function makeScene(text: string): Scene {
 function makeFrame(scene: Scene, progress: number, order: 'together' | 'sequential'): Frame {
   return { width: scene.width, height: scene.height, background: scene.background, objects: [{ object: scene.objects.equation, state: structuredClone(scene.compositions.state.states.equation), writeProgress: progress, order }] };
 }
-async function svgPixels(frame: Frame, target: HTMLCanvasElement) {
+export async function svgPixels(frame: Frame, target: HTMLCanvasElement) {
   await drawSvgFrame(frameToSvg(frame), target.getContext('2d')!, target.width, target.height, frame.width, frame.height, frame.background);
   return pixels(target);
 }
@@ -84,7 +84,7 @@ async function legacyLayerPixels(frame: Frame, target: HTMLCanvasElement) {
   try { await legacy.render(frame); return pixels(target); }
   finally { legacy.dispose(); Object.defineProperty(window, 'Path2D', descriptor); }
 }
-function showComparison(actual: HTMLCanvasElement, reference: HTMLCanvasElement) {
+export function showComparison(actual: HTMLCanvasElement, reference: HTMLCanvasElement) {
   const preview = document.querySelector('canvas')!;
   preview.width = actual.width * 2; preview.height = actual.height;
   const context = preview.getContext('2d')!;
