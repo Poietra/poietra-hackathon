@@ -6,6 +6,7 @@ import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { validateProposalForApply, type EditProposal } from '../../shared/ai';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
+import { EditorUndoManager, undoPreservingPeerTracks } from './undo';
 
 export interface Peer {
   clientId: number;
@@ -43,7 +44,7 @@ export class EditorStore {
   readonly doc = new Y.Doc();
   readonly provider: WebsocketProvider;
   readonly persistence: IndexeddbPersistence;
-  readonly undoManager: Y.UndoManager;
+  readonly undoManager: EditorUndoManager;
   private listeners = new Set<() => void>();
   private state: EditorSnapshot = { project: null, status: 'connecting', synced: false, localPersistence: 'loading', connectionIssue: null, peers: [], canUndo: false, canRedo: false };
   private connectionWait: ReturnType<typeof setTimeout> | null = null;
@@ -53,7 +54,7 @@ export class EditorStore {
   userName = localStorage.getItem('poietra-user-name') || `Guest ${String(this.doc.clientID).slice(-3)}`;
 
   constructor(readonly roomId: string) {
-    this.undoManager = new Y.UndoManager(this.doc.getMap('project'), { trackedOrigins: new Set([LOCAL_ORIGIN]), captureTimeout: 400 });
+    this.undoManager = new EditorUndoManager(this.doc);
     this.persistence = new IndexeddbPersistence(`poietra-${roomId}`, this.doc);
     const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/sync`;
     this.provider = new WebsocketProvider(url, roomId, this.doc, { disableBc: true });
@@ -140,7 +141,12 @@ export class EditorStore {
   presence(state: Partial<Peer>) { this.provider.awareness.setLocalStateField('editor', { ...this.provider.awareness.getLocalState()?.editor, ...state }); }
   beginGesture() { this.undoManager.stopCapturing(); this.undoManager.captureTimeout = Infinity; }
   endGesture() { this.undoManager.captureTimeout = 400; this.undoManager.stopCapturing(); }
-  undo() { this.undoManager.undo(); }
+  undo() {
+    const retained = undoPreservingPeerTracks(this.undoManager);
+    // A protected creation may consume an Undo item without a document update.
+    this.refresh();
+    return retained;
+  }
   redo() { this.undoManager.redo(); }
   edit(changes: Change[], separate = true) { if (separate) this.undoManager.stopCapturing(); applyChanges(this.doc, changes); if (separate) this.undoManager.stopCapturing(); }
   project() { const project = readProject(this.doc); if (!project) throw new Error('Project is loading'); return project; }

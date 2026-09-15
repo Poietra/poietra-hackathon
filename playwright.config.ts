@@ -3,7 +3,7 @@ import { defineConfig } from '@playwright/test';
 const baseURL = process.env.POIETRA_TEST_URL || 'http://127.0.0.1:5173';
 export default defineConfig({
   testDir: './tests/e2e',
-  testMatch: ['editor.spec.ts', 'canvas.spec.ts', 'ai*.spec.ts', 'project*.spec.ts', 'timeline.spec.ts', 'layers.spec.ts', 'structure.spec.ts', 'clipboard.spec.ts', 'keyboard.spec.ts', 'text-editing.spec.ts', 'dogfood*.spec.ts', 'marquee.spec.ts', 'groups.spec.ts', 'ime.spec.ts', 'playback.spec.ts', 'scenes.spec.ts', 'connection.spec.ts', ...(process.env.POIETRA_TEST_URL ? [] : ['painter-preview.spec.ts', 'export-dialog.spec.ts'])],
+  testMatch: ['editor.spec.ts', 'canvas.spec.ts', 'ai*.spec.ts', 'project*.spec.ts', 'timeline.spec.ts', 'layers.spec.ts', 'structure.spec.ts', 'clipboard.spec.ts', 'keyboard.spec.ts', 'text-editing.spec.ts', 'dogfood*.spec.ts', 'marquee.spec.ts', 'groups.spec.ts', 'ime.spec.ts', 'undo-tracks.spec.ts', 'playback.spec.ts', 'scenes.spec.ts', 'connection.spec.ts', ...(process.env.POIETRA_TEST_URL ? [] : ['painter-preview.spec.ts', 'export-dialog.spec.ts'])],
   fullyParallel: true,
   workers: 2,
   timeout: 30000,

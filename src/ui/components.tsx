@@ -4,8 +4,8 @@ import { Dialog } from '@base-ui/react/dialog';
 import { X } from 'lucide-react';
 import { cn } from './utils';
 
-export function IconButton({ label, active, className, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }) {
-  return <Tooltip.Root><Tooltip.Trigger {...props} aria-label={label} className={cn('icon-button', active && 'active', className)}>{children}</Tooltip.Trigger><Tooltip.Portal><Tooltip.Positioner sideOffset={7}><Tooltip.Popup className="tooltip">{label}</Tooltip.Popup></Tooltip.Positioner></Tooltip.Portal></Tooltip.Root>;
+export function IconButton({ label, active, className, children, disabled, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }) {
+  return <Tooltip.Root><Tooltip.Trigger {...props} disabled={disabled} render={<button disabled={disabled}/>} aria-label={label} className={cn('icon-button', active && 'active', className)}>{children}</Tooltip.Trigger><Tooltip.Portal><Tooltip.Positioner sideOffset={7}><Tooltip.Popup className="tooltip">{label}</Tooltip.Popup></Tooltip.Positioner></Tooltip.Portal></Tooltip.Root>;
 }
 
 export function Field({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
