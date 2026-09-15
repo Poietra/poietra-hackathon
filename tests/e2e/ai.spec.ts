@@ -116,3 +116,16 @@ test('an API failure can be retried, with no fake edit and no lost draft', async
   await expect(page.getByRole('textbox', { name: 'チャットメッセージ' })).toHaveValue('次の依頼の下書き');
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+test('Ctrl+Enter sends a @codex request and applies the guarded proposal without a click', async ({ page }) => {
+  await open(page); await assistant(page);
+  await page.route('**/api/ai/propose', route => fulfill(route, positionProposal(640)));
+  const composer = page.getByRole('textbox', { name: 'チャットメッセージ' });
+  await composer.fill('@codex 円を中央にしてください'); await composer.press('Control+Enter');
+  await expect(page.getByText('Applied', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Apply edits' })).toHaveCount(0);
+  await expect(page.getByRole('status')).toContainText('即適用');
+  await design(page); await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('640');
+  await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('245');
+});

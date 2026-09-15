@@ -4,14 +4,17 @@ import { applyChanges, initializeDocument } from '../shared/document';
 import { makeDemoProject } from '../shared/demo';
 import { validateProposalForApply } from '../shared/ai';
 
-const { parse } = vi.hoisted(() => ({ parse: vi.fn() }));
-vi.mock('openai', () => ({ default: class { responses = { parse }; static APIError = class extends Error {}; } }));
+const { parse, constructed } = vi.hoisted(() => ({ parse: vi.fn(), constructed: [] as unknown[] }));
+vi.mock('openai', () => ({ default: class { constructor(options: unknown) { constructed.push(options); } responses = { parse }; static APIError = class extends Error {}; } }));
 import { AiRequestSchema, createEditProposal, type AiRequest } from '../server/ai';
 
 let doc: Y.Doc;
 const input: AiRequest = { roomId: 'ai-unit-test-room', sceneId: 'scene-1', compositionId: 'comp-1', transitionId: null, selectedIds: ['circle'], prompt: '円を中央に' };
-beforeEach(() => { doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); });
-afterEach(() => doc.destroy());
+beforeEach(() => {
+  doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); constructed.length = 0;
+  vi.spyOn(console, 'log').mockImplementation(() => {}); vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => { doc.destroy(); vi.restoreAllMocks(); });
 
 test.each([false, true])('composition append requires an explicitly capable client (%s)', async supported => {
   parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '次の場面を追加します。', operations: [
@@ -170,4 +173,56 @@ test('Responses can create and animate a new object with a longer Transition in 
   expect(JSON.stringify(body.text.format.schema)).toContain('setTransitionDuration');
   expect(body.input[0].content).toContain('never rescales or clamps other tracks');
   expect(body.input[0].content).toContain('appendComposition adds a new Composition at the end');
+});
+
+const missingTarget = { status: 'completed', output_parsed: { message: '見つからない対象を編集', operations: [{ action: 'setState', compositionId: 'comp-1', objectId: 'missing', property: 'x', value: 640 }] } };
+const centered = { status: 'completed', output_parsed: { message: '中央に移動', operations: [{ action: 'setState', compositionId: 'comp-1', objectId: 'circle', property: 'x', value: 640 }] } };
+
+test('a proposal rejected by validation is regenerated once with its own output and the reason attached', async () => {
+  parse.mockResolvedValueOnce(missingTarget).mockResolvedValueOnce(centered);
+  const proposal = await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
+  expect(proposal.changes).toHaveLength(1); expect(proposal.changes[0].value).toBe(640);
+  expect(parse).toHaveBeenCalledTimes(2);
+  const first = parse.mock.calls[0][0].input, second = parse.mock.calls[1][0].input;
+  expect(second.slice(0, first.length)).toEqual(first);
+  expect(second).toHaveLength(first.length + 2);
+  expect(second.at(-2).role).toBe('assistant'); expect(JSON.parse(second.at(-2).content)).toEqual(missingTarget.output_parsed);
+  expect(second.at(-1).role).toBe('user');
+  expect(second.at(-1).content).toContain('編集対象のオブジェクトが見つかりません'); expect(second.at(-1).content).toContain('Return a corrected proposal');
+  expect(parse.mock.calls[1][0]).toMatchObject({ store: false, text: { format: { strict: true } } });
+  expect(JSON.parse(vi.mocked(console.warn).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal_rejected' });
+  expect(JSON.parse(vi.mocked(console.log).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal', attempts: 2, operations: 1, changes: 1, usage: { input: 0, cached: 0, output: 0 } });
+});
+
+test('a second rejected proposal surfaces its own reason and there is no third attempt', async () => {
+  parse.mockResolvedValueOnce(missingTarget).mockResolvedValueOnce({ status: 'completed', output_parsed: { message: 'まだ無効', operations: [{ action: 'setTrack', transitionId: 'transition-1', objectId: 'circle', property: 'type', value: 'jump' }] } });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow();
+  expect(parse).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(console.log)).not.toHaveBeenCalled();
+});
+
+test('call failures, truncated output and refusals are never replayed as repairs', async () => {
+  parse.mockRejectedValueOnce(new Error('boom'));
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow('boom');
+  parse.mockResolvedValueOnce({ status: 'incomplete', output_parsed: null });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow('まとめきれ');
+  parse.mockResolvedValueOnce({ status: 'completed', output_parsed: null });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow('編集案を作れ');
+  expect(parse).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+});
+
+test('no repair starts once the first attempt has used the room lock budget', async () => {
+  let now = 1_000_000; vi.spyOn(Date, 'now').mockImplementation(() => now);
+  parse.mockImplementationOnce(async () => { now += 55_000; return missingTarget; });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow('編集対象のオブジェクトが見つかりません');
+  expect(parse).toHaveBeenCalledTimes(1);
+});
+
+test('token usage across attempts and the bounded SDK client are recorded', async () => {
+  parse.mockResolvedValueOnce({ ...missingTarget, usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: 800 }, output_tokens: 50 } })
+    .mockResolvedValueOnce({ ...centered, usage: { input_tokens: 1200, input_tokens_details: { cached_tokens: 1000 }, output_tokens: 40 } });
+  await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
+  expect(JSON.parse(vi.mocked(console.log).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal', attempts: 2, usage: { input: 2200, cached: 1800, output: 90 } });
+  expect(constructed.at(-1)).toMatchObject({ apiKey: 'test-key-never-sent', timeout: 60000, maxRetries: 1 });
 });
