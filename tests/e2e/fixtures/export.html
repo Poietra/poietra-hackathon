@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Poietra export acceptance fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 24px; background: #16171b; color: #edeef2; font: 16px system-ui, sans-serif; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { color: #a4a7b1; }
+      .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+      h2 { font-size: 16px; }
+      #preview, #decoded { width: 100%; aspect-ratio: 16 / 9; background: #08090b; }
+      #preview > svg, #decoded { display: block; width: 100%; height: auto; }
+      #status { white-space: pre-wrap; line-height: 1.6; }
+      #duplicates { display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>Poietra · Browser export verification</h1>
+    <p>1280 × 720 · 30 fps · 3.4 seconds · local Japanese font and SVG mathematics</p>
+    <div class="panes">
+      <section><h2>Preview at 2.0 s</h2><div id="preview"></div></section>
+      <section><h2>Decoded exported frame at 2.0 s</h2><canvas id="decoded" width="1280" height="720"></canvas></section>
+    </div>
+    <p id="status">Loading the real renderer and WASM motion kernel…</p>
+    <div id="duplicates"></div>
+    <script type="module" src="./export.ts"></script>
+  </body>
+</html>
