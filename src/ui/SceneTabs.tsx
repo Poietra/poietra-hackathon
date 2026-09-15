@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Tabs } from '@base-ui/react/tabs';
 import { Menu } from '@base-ui/react/menu';
-import { ChartNoAxesColumnIncreasing, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChartNoAxesColumnIncreasing, Copy, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Project } from '../../shared/model';
 import type { EditorStore } from '../editor/store';
-import { deleteScene, duplicateScene, renameScene } from '../editor/scenes';
+import { deleteScene, duplicateScene, moveScene, renameScene } from '../editor/scenes';
 import { IconButton, Modal } from './components';
 import './SceneTabs.css';
 
@@ -20,10 +20,11 @@ interface Props {
 export function SceneTabs({ project, sceneId, onChange, onNew, store, notify }: Props) {
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [error, setError] = useState('');
-  function operate(id: string, action: 'duplicate' | 'delete') {
+  function operate(id: string, action: 'duplicate' | 'delete' | 'earlier' | 'later') {
     store.undoManager.stopCapturing();
     try {
-      if (action === 'duplicate') { onChange(duplicateScene(store.doc, id)); notify('Scene を複製しました。個別に編集できます。'); }
+      if (action === 'earlier' || action === 'later') { moveScene(store.doc, id, action === 'earlier' ? -1 : 1); notify('Scene の順番を変更しました。Undo で戻せます。'); }
+      else if (action === 'duplicate') { onChange(duplicateScene(store.doc, id)); notify('Scene を複製しました。個別に編集できます。'); }
       else {
         const removed = deleteScene(store.doc, id);
         if (sceneId === id) onChange(removed.selectedId);
@@ -52,6 +53,8 @@ export function SceneTabs({ project, sceneId, onChange, onNew, store, notify }: 
                 <Menu.Portal><Menu.Positioner side="bottom" align="start" sideOffset={6} className="z-50"><Menu.Popup className="min-w-44 max-w-60 rounded-md border border-line bg-panel p-1 shadow-lg outline-none">
                   <Menu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-2 text-xs outline-none data-[highlighted]:bg-field" onClick={() => { setError(''); setRenaming({ id, name: store.project().scenes[id]?.name ?? scene.name }); }}><Pencil size={14}/>Rename</Menu.Item>
                   <Menu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-2 text-xs outline-none data-[highlighted]:bg-field data-[disabled]:opacity-40" disabled={project.sceneOrder.length >= 100} onClick={() => operate(id, 'duplicate')}><Copy size={14}/>Duplicate</Menu.Item>
+                  <Menu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-2 text-xs outline-none data-[highlighted]:bg-field data-[disabled]:opacity-40" disabled={project.sceneOrder.indexOf(id) === 0} onClick={() => operate(id, 'earlier')}><ArrowLeft size={14}/>Move earlier</Menu.Item>
+                  <Menu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-2 text-xs outline-none data-[highlighted]:bg-field data-[disabled]:opacity-40" disabled={project.sceneOrder.indexOf(id) === project.sceneOrder.length - 1} onClick={() => operate(id, 'later')}><ArrowRight size={14}/>Move later</Menu.Item>
                   <Menu.Item className="flex cursor-default items-center gap-2 rounded px-2 py-2 text-xs outline-none data-[highlighted]:bg-field data-[disabled]:opacity-40" disabled={project.sceneOrder.length <= 1} onClick={() => operate(id, 'delete')}><Trash2 size={14}/>Delete</Menu.Item>
                   <p className="px-2 py-1 text-xs text-[var(--muted)]">{project.sceneOrder.length <= 1 ? '最後の Scene は残します。' : '削除した Scene は元に戻すで復元できます。'}</p>
                 </Menu.Popup></Menu.Positioner></Menu.Portal>

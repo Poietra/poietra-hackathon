@@ -6,7 +6,7 @@ import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { validateProposalForApply, type EditProposal } from '../../shared/ai';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
-import { EditorUndoManager, undoPreservingPeerTracks } from './undo';
+import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
 
 export interface Peer {
   clientId: number;
@@ -141,13 +141,15 @@ export class EditorStore {
   presence(state: Partial<Peer>) { this.provider.awareness.setLocalStateField('editor', { ...this.provider.awareness.getLocalState()?.editor, ...state }); }
   beginGesture() { this.undoManager.stopCapturing(); this.undoManager.captureTimeout = Infinity; }
   endGesture() { this.undoManager.captureTimeout = 400; this.undoManager.stopCapturing(); }
+  get lastUndoPreservedObjects() { return this.undoManager.lastUndoPreservedObjects; }
+  get lastUndoPreservedDurations() { return this.undoManager.lastUndoPreservedDurations; }
   undo() {
     const retained = undoPreservingPeerTracks(this.undoManager);
     // A protected creation may consume an Undo item without a document update.
     this.refresh();
     return retained;
   }
-  redo() { this.undoManager.redo(); }
+  redo() { const retained = redoPreservingPeerDurations(this.undoManager); this.refresh(); return retained; }
   edit(changes: Change[], separate = true) { if (separate) this.undoManager.stopCapturing(); applyChanges(this.doc, changes); if (separate) this.undoManager.stopCapturing(); }
   project() { const project = readProject(this.doc); if (!project) throw new Error('Project is loading'); return project; }
   scene(sceneId: string) { const scene = this.project().scenes[sceneId]; if (!scene) throw new Error('Scene no longer exists'); return scene; }
