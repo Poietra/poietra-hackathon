@@ -1,0 +1,55 @@
+{
+  "name": "poietra",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --import tsx server/index.ts",
+    "start": "NODE_ENV=production node --env-file-if-exists=.env --import tsx server/index.ts",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "build": "pnpm build:wasm && pnpm typecheck && vite build",
+    "build:web": "pnpm typecheck && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:core": "cargo test --manifest-path core/Cargo.toml",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@base-ui/react": "1.8.0",
+    "@fontsource/inter": "5.3.0",
+    "@fontsource/noto-sans-jp": "5.3.0",
+    "clsx": "2.1.1",
+    "lib0": "0.2.117",
+    "lucide-react": "1.46.0",
+    "mathjax-full": "3.2.2",
+    "mediabunny": "1.56.2",
+    "openai": "7.15.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "3.7.0",
+    "ws": "8.21.3",
+    "y-indexeddb": "9.0.12",
+    "y-protocols": "1.0.7",
+    "y-websocket": "3.1.0",
+    "yjs": "13.6.32",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "26.5.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "6.1.1",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "vite": "8.3.0",
+    "vitest": "5.0.0"
+  }
+}

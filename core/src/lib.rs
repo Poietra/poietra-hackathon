@@ -1,0 +1,57 @@
+//! Pure, time-addressable motion evaluation. No browser or UI dependencies.
+
+#[no_mangle]
+pub extern "C" fn ease(value: f64, kind: u32) -> f64 {
+    let t = if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+    match kind {
+        1 => if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 },
+        2 => t * t * t,
+        3 => 1.0 - (1.0 - t).powi(3),
+        _ => t,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn track_progress(time: f64, start: f64, duration: f64, easing: u32) -> f64 {
+    if time < start { return 0.0; }
+    if duration <= 0.0 { return 1.0; }
+    ease((time - start) / duration, easing)
+}
+
+#[no_mangle]
+pub extern "C" fn interpolate(from: f64, to: f64, progress: f64) -> f64 {
+    from + (to - from) * progress.clamp(0.0, 1.0)
+}
+
+#[no_mangle]
+pub extern "C" fn cubic_bezier(p0: f64, p1: f64, p2: f64, p3: f64, progress: f64) -> f64 {
+    let t = progress.clamp(0.0, 1.0);
+    let u = 1.0 - t;
+    u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_clamps_to_its_own_interval() {
+        assert_eq!(track_progress(399.0, 400.0, 400.0, 1), 0.0);
+        assert_eq!(track_progress(600.0, 400.0, 400.0, 1), 0.5);
+        assert_eq!(track_progress(900.0, 400.0, 400.0, 1), 1.0);
+        assert_eq!(track_progress(400.0, 400.0, 0.0, 1), 1.0);
+    }
+
+    #[test]
+    fn independent_tracks_overlap() {
+        assert_eq!(track_progress(600.0, 0.0, 600.0, 1), 1.0);
+        assert_eq!(track_progress(600.0, 400.0, 400.0, 1), 0.5);
+    }
+
+    #[test]
+    fn bezier_reaches_composition_endpoints() {
+        assert_eq!(cubic_bezier(245.0, 505.0, 665.0, 955.0, 0.0), 245.0);
+        assert_eq!(cubic_bezier(245.0, 505.0, 665.0, 955.0, 1.0), 955.0);
+        assert_eq!(cubic_bezier(0.0, 0.0, 10.0, 10.0, 0.5), 5.0);
+    }
+}
