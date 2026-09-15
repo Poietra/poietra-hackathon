@@ -1,70 +1,112 @@
-import { compositeFragmentShader, fullscreenVertexShader, gaussianFragmentShader } from './shaders';
+import { compositeFragmentShader, gaussianFragmentShader } from './shaders';
+import { checkGraphicsError, createProgram, createRenderTarget, createTexture, resizeTexture, uniform, type RenderTarget } from './webgl';
 
-/** Match the existing SVG Glow: sigma is measured in Scene pixels before output scaling. */
-export const GLOW_STYLE = {
-  sigmaScenePixels: 4,
-  // Four standard deviations retain more than 99.99% of a one-dimensional Gaussian.
-  cutoffStandardDeviations: 4,
-} as const;
+import { GLOW_STYLE } from './glow-style';
+export { GLOW_STYLE } from './glow-style';
 
 export interface GlowRenderer {
   readonly canvas: HTMLCanvasElement;
-  /** Context loss permanently disables this renderer; the caller continues through Canvas 2D. */
+  /** Context loss permanently disables this renderer; the caller uses Canvas 2D afterward. */
   readonly lost: boolean;
   render(source: TexImageSource, width: number, height: number, sigmaPixels: number): void;
   dispose(): void;
 }
 
-function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
-  const shader = gl.createShader(type);
-  if (!shader) throw new Error('Glow shader allocation failed.');
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const detail = gl.getShaderInfoLog(shader) ?? 'Unknown compilation error';
-    gl.deleteShader(shader);
-    throw new Error(`Glow shader compilation failed: ${detail}`);
-  }
-  return shader;
-}
+/** Named targets make the source -> horizontal blur -> vertical blur path explicit. */
+function createResources(gl: WebGL2RenderingContext) {
+  let sourceTexture: WebGLTexture | undefined;
+  let horizontal: RenderTarget | undefined;
+  let vertical: RenderTarget | undefined;
+  let blurProgram: WebGLProgram | undefined;
+  let compositeProgram: WebGLProgram | undefined;
 
-function createProgram(gl: WebGL2RenderingContext, fragmentSource: string): WebGLProgram {
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, fullscreenVertexShader);
-  let fragment: WebGLShader | undefined;
-  let program: WebGLProgram | null = null;
+  function dispose() {
+    if (sourceTexture) gl.deleteTexture(sourceTexture);
+    for (const target of [horizontal, vertical]) {
+      if (!target) continue;
+      gl.deleteFramebuffer(target.framebuffer);
+      gl.deleteTexture(target.texture);
+    }
+    if (blurProgram) gl.deleteProgram(blurProgram);
+    if (compositeProgram) gl.deleteProgram(compositeProgram);
+  }
+
   try {
-    fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-    program = gl.createProgram();
-    if (!program) throw new Error('Glow program allocation failed.');
-    gl.attachShader(program, vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      throw new Error(`Glow program linking failed: ${gl.getProgramInfoLog(program) ?? 'Unknown link error'}`);
-    }
-    return program;
+    sourceTexture = createTexture(gl);
+    horizontal = createRenderTarget(gl);
+    vertical = createRenderTarget(gl);
+    blurProgram = createProgram(gl, gaussianFragmentShader);
+    compositeProgram = createProgram(gl, compositeFragmentShader);
+    const blurUniforms = {
+      source: uniform(gl, blurProgram, 'uSource'),
+      texelStep: uniform(gl, blurProgram, 'uTexelStep'),
+      sigma: uniform(gl, blurProgram, 'uSigma'),
+      radius: uniform(gl, blurProgram, 'uRadius'),
+    };
+    const compositeUniforms = {
+      source: uniform(gl, compositeProgram, 'uSource'),
+      halo: uniform(gl, compositeProgram, 'uHalo'),
+      haloStrength: uniform(gl, compositeProgram, 'uHaloStrength'),
+    };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { sourceTexture, horizontal, vertical, blurProgram, compositeProgram, blurUniforms, compositeUniforms, dispose };
   } catch (error) {
-    if (program) gl.deleteProgram(program);
-    program = null;
+    dispose();
     throw error;
-  } finally {
-    // Linked programs retain their compiled code; shader handles are no longer needed.
-    if (program && fragment) {
-      gl.detachShader(program, vertex);
-      gl.detachShader(program, fragment);
-    }
-    gl.deleteShader(vertex);
-    if (fragment) gl.deleteShader(fragment);
   }
 }
 
-function uniform(gl: WebGL2RenderingContext, program: WebGLProgram, name: string): WebGLUniformLocation {
-  const location = gl.getUniformLocation(program, name);
-  if (location === null) throw new Error(`Glow shader uniform is unavailable: ${name}`);
-  return location;
+type GlowResources = ReturnType<typeof createResources>;
+
+function resizeTargets(gl: WebGL2RenderingContext, resources: GlowResources, width: number, height: number) {
+  gl.activeTexture(gl.TEXTURE0);
+  for (const texture of [resources.sourceTexture, resources.horizontal.texture, resources.vertical.texture]) {
+    resizeTexture(gl, texture, width, height);
+  }
+  for (const target of [resources.horizontal, resources.vertical]) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('Glow framebuffer is incomplete.');
+    }
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  checkGraphicsError(gl);
 }
 
-/** Private WebGL canvas: the caller's output canvas remains available for Canvas 2D fallback. */
+function blur(gl: WebGL2RenderingContext, resources: GlowResources, width: number, height: number, sigma: number) {
+  const uniforms = resources.blurUniforms;
+  gl.useProgram(resources.blurProgram);
+  gl.uniform1i(uniforms.source, 0);
+  gl.uniform1f(uniforms.sigma, sigma);
+  gl.uniform1i(uniforms.radius, Math.ceil(sigma * GLOW_STYLE.cutoffStandardDeviations));
+  gl.activeTexture(gl.TEXTURE0);
+
+  gl.bindTexture(gl.TEXTURE_2D, resources.sourceTexture);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, resources.horizontal.framebuffer);
+  gl.uniform2f(uniforms.texelStep, 1 / width, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  gl.bindTexture(gl.TEXTURE_2D, resources.horizontal.texture);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, resources.vertical.framebuffer);
+  gl.uniform2f(uniforms.texelStep, 0, 1 / height);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function composite(gl: WebGL2RenderingContext, resources: GlowResources, withGlow: boolean) {
+  const uniforms = resources.compositeUniforms;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.useProgram(resources.compositeProgram);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, resources.sourceTexture);
+  gl.uniform1i(uniforms.source, 0);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, withGlow ? resources.vertical.texture : resources.sourceTexture);
+  gl.uniform1i(uniforms.halo, 1);
+  gl.uniform1f(uniforms.haloStrength, withGlow ? 1 : 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/** Use a private WebGL canvas so the caller's output remains available for Canvas 2D fallback. */
 export function createGlowRenderer(): GlowRenderer | null {
   if (typeof document === 'undefined') return null;
   const canvas = document.createElement('canvas');
@@ -72,172 +114,82 @@ export function createGlowRenderer(): GlowRenderer | null {
   try {
     gl = canvas.getContext('webgl2', {
       alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false,
-      // The caller copies these pixels immediately; keep them valid across that copy boundary.
+      // Keep the completed pixels valid until the caller copies them to its object cache.
       preserveDrawingBuffer: true,
     });
   } catch { return null; }
   if (!gl) return null;
   const context = gl;
-  const programs: WebGLProgram[] = [];
-  const textures: WebGLTexture[] = [];
-  const framebuffers: WebGLFramebuffer[] = [];
-  let vertexArray: WebGLVertexArrayObject | null = null;
-  let contextLost = context.isContextLost();
+  let resources: GlowResources | undefined;
   let disposed = false;
+  let contextLost = context.isContextLost();
   let textureWidth = 0;
   let textureHeight = 0;
-  const onContextLost = (event: Event) => {
+
+  function onContextLost(event: Event) {
     event.preventDefault();
     contextLost = true;
-  };
-  canvas.addEventListener('webglcontextlost', onContextLost);
-
+  }
   const isLost = () => contextLost || context.isContextLost();
-  const dispose = () => {
+  function dispose() {
     if (disposed) return;
     disposed = true;
     canvas.removeEventListener('webglcontextlost', onContextLost);
-    for (const framebuffer of framebuffers) context.deleteFramebuffer(framebuffer);
-    for (const texture of textures) context.deleteTexture(texture);
-    for (const program of programs) context.deleteProgram(program);
-    if (vertexArray) context.deleteVertexArray(vertexArray);
+    resources?.dispose();
     canvas.width = 0;
     canvas.height = 0;
-    // Release the private context as well, so repeated exports do not accumulate live contexts.
+    // The canvas is private; release its context so repeated exports do not retain contexts.
     if (!context.isContextLost()) context.getExtension('WEBGL_lose_context')?.loseContext();
-  };
+  }
+  canvas.addEventListener('webglcontextlost', onContextLost);
 
   try {
     if (isLost()) throw new Error('WebGL context is lost.');
     const maxTextureSize = context.getParameter(context.MAX_TEXTURE_SIZE) as number;
     const maxViewport = context.getParameter(context.MAX_VIEWPORT_DIMS) as Int32Array;
-    const blurProgram = createProgram(context, gaussianFragmentShader);
-    programs.push(blurProgram);
-    const compositeProgram = createProgram(context, compositeFragmentShader);
-    programs.push(compositeProgram);
-    const blurUniforms = {
-      source: uniform(context, blurProgram, 'uSource'),
-      texelStep: uniform(context, blurProgram, 'uTexelStep'),
-      sigma: uniform(context, blurProgram, 'uSigma'),
-      radius: uniform(context, blurProgram, 'uRadius'),
-    };
-    const compositeUniforms = {
-      source: uniform(context, compositeProgram, 'uSource'),
-      halo: uniform(context, compositeProgram, 'uHalo'),
-      haloStrength: uniform(context, compositeProgram, 'uHaloStrength'),
-    };
-    vertexArray = context.createVertexArray();
-    if (!vertexArray) throw new Error('Glow vertex array allocation failed.');
-    context.bindVertexArray(vertexArray);
-    for (let index = 0; index < 3; index++) {
-      const texture = context.createTexture();
-      if (!texture) throw new Error('Glow texture allocation failed.');
-      textures.push(texture);
-      context.bindTexture(context.TEXTURE_2D, texture);
-      context.texParameteri(context.TEXTURE_2D, context.TEXTURE_MIN_FILTER, context.LINEAR);
-      context.texParameteri(context.TEXTURE_2D, context.TEXTURE_MAG_FILTER, context.LINEAR);
-      context.texParameteri(context.TEXTURE_2D, context.TEXTURE_WRAP_S, context.CLAMP_TO_EDGE);
-      context.texParameteri(context.TEXTURE_2D, context.TEXTURE_WRAP_T, context.CLAMP_TO_EDGE);
-    }
-    const [sourceTexture, horizontalTexture, verticalTexture] = textures;
-    for (const texture of [horizontalTexture, verticalTexture]) {
-      const framebuffer = context.createFramebuffer();
-      if (!framebuffer) throw new Error('Glow framebuffer allocation failed.');
-      framebuffers.push(framebuffer);
-      context.bindFramebuffer(context.FRAMEBUFFER, framebuffer);
-      context.framebufferTexture2D(context.FRAMEBUFFER, context.COLOR_ATTACHMENT0, context.TEXTURE_2D, texture, 0);
-    }
-    context.bindFramebuffer(context.FRAMEBUFFER, null);
+    resources = createResources(context);
+    const gpu = resources;
     context.disable(context.BLEND);
     context.disable(context.DEPTH_TEST);
     context.disable(context.STENCIL_TEST);
     context.disable(context.SCISSOR_TEST);
     context.disable(context.DITHER);
 
-    function checkUsable() {
+    function render(source: TexImageSource, width: number, height: number, sigmaPixels: number) {
       if (disposed) throw new Error('Glow renderer has been disposed.');
       if (isLost()) throw new Error('WebGL context is lost.');
-    }
-
-    function checkGraphicsError() {
-      checkUsable();
-      const error = context.getError();
-      if (error !== context.NO_ERROR) throw new Error(`Glow rendering failed with WebGL error ${error}.`);
-    }
-
-    function resize(width: number, height: number) {
-      if (width === textureWidth && height === textureHeight) return;
-      canvas.width = width;
-      canvas.height = height;
-      if (context.drawingBufferWidth !== width || context.drawingBufferHeight !== height) {
-        throw new Error('WebGL cannot allocate the requested Glow output size.');
-      }
-      context.activeTexture(context.TEXTURE0);
-      for (const texture of textures) {
-        context.bindTexture(context.TEXTURE_2D, texture);
-        context.texImage2D(context.TEXTURE_2D, 0, context.RGBA8, width, height, 0, context.RGBA, context.UNSIGNED_BYTE, null);
-      }
-      for (const framebuffer of framebuffers) {
-        context.bindFramebuffer(context.FRAMEBUFFER, framebuffer);
-        if (context.checkFramebufferStatus(context.FRAMEBUFFER) !== context.FRAMEBUFFER_COMPLETE) {
-          throw new Error('Glow framebuffer is incomplete.');
-        }
-      }
-      context.bindFramebuffer(context.FRAMEBUFFER, null);
-      checkGraphicsError();
-      textureWidth = width;
-      textureHeight = height;
-    }
-
-    function render(source: TexImageSource, width: number, height: number, sigmaPixels: number) {
-      checkUsable();
       if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0
         || width > maxTextureSize || height > maxTextureSize || width > maxViewport[0] || height > maxViewport[1]) {
         throw new Error('The Glow source exceeds WebGL texture or viewport limits.');
       }
-      const radius = Math.ceil(sigmaPixels * GLOW_STYLE.cutoffStandardDeviations);
-      if (!Number.isFinite(sigmaPixels) || sigmaPixels < 0 || radius > maxTextureSize) {
+      if (!Number.isFinite(sigmaPixels) || sigmaPixels < 0
+        || Math.ceil(sigmaPixels * GLOW_STYLE.cutoffStandardDeviations) > maxTextureSize) {
         throw new Error('The Glow blur radius is invalid or exceeds WebGL texture limits.');
       }
-      resize(width, height);
+      if (width !== textureWidth || height !== textureHeight) {
+        // Each assignment reallocates the drawing buffer, even when the value is unchanged.
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
+        if (context.drawingBufferWidth !== width || context.drawingBufferHeight !== height) {
+          throw new Error('WebGL cannot allocate the requested Glow output size.');
+        }
+        resizeTargets(context, gpu, width, height);
+        textureWidth = width;
+        textureHeight = height;
+      }
       context.viewport(0, 0, width, height);
-      context.bindVertexArray(vertexArray);
       context.activeTexture(context.TEXTURE0);
-      context.bindTexture(context.TEXTURE_2D, sourceTexture);
-      // DOM images have a top-left origin. All shader passes and canvas output use bottom-left UVs.
+      context.bindTexture(context.TEXTURE_2D, gpu.sourceTexture);
+      // DOM sources start at the top left. Shader passes use bottom-left UVs and premultiplied RGBA.
       context.pixelStorei(context.UNPACK_FLIP_Y_WEBGL, true);
       context.pixelStorei(context.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
       context.texSubImage2D(context.TEXTURE_2D, 0, 0, 0, context.RGBA, context.UNSIGNED_BYTE, source);
-      checkGraphicsError();
-
-      if (sigmaPixels > 0) {
-        context.useProgram(blurProgram);
-        context.uniform1i(blurUniforms.source, 0);
-        context.uniform1f(blurUniforms.sigma, sigmaPixels);
-        context.uniform1i(blurUniforms.radius, radius);
-        context.uniform2f(blurUniforms.texelStep, 1 / width, 0);
-        context.bindFramebuffer(context.FRAMEBUFFER, framebuffers[0]);
-        context.drawArrays(context.TRIANGLES, 0, 3);
-        context.bindTexture(context.TEXTURE_2D, horizontalTexture);
-        context.uniform2f(blurUniforms.texelStep, 0, 1 / height);
-        context.bindFramebuffer(context.FRAMEBUFFER, framebuffers[1]);
-        context.drawArrays(context.TRIANGLES, 0, 3);
-      }
-
-      context.bindFramebuffer(context.FRAMEBUFFER, null);
-      context.useProgram(compositeProgram);
-      context.activeTexture(context.TEXTURE0);
-      context.bindTexture(context.TEXTURE_2D, sourceTexture);
-      context.uniform1i(compositeUniforms.source, 0);
-      context.activeTexture(context.TEXTURE1);
-      context.bindTexture(context.TEXTURE_2D, sigmaPixels > 0 ? verticalTexture : sourceTexture);
-      context.uniform1i(compositeUniforms.halo, 1);
-      context.uniform1f(compositeUniforms.haloStrength, sigmaPixels > 0 ? 1 : 0);
-      context.drawArrays(context.TRIANGLES, 0, 3);
+      if (sigmaPixels > 0) blur(context, gpu, width, height, sigmaPixels);
+      composite(context, gpu, sigmaPixels > 0);
       context.flush();
-      checkGraphicsError();
+      // One final check covers upload and drawing errors before the caller can copy pixels.
+      checkGraphicsError(context);
     }
-
     return { canvas, get lost() { return isLost(); }, render, dispose };
   } catch {
     dispose();

@@ -17,7 +17,7 @@
       button:focus-visible, input:focus-visible { outline: 2px solid #9093c9; outline-offset: 2px; }
       .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 24px 0; }
       h2 { font-size: 13px; font-weight: 500; color: #b6b8c8; margin: 0 0 12px; }
-      canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #08090b; }
+      canvas { display: block; width: 100%; height: auto; aspect-ratio: var(--scene-aspect); background: #08090b; }
       .transport { border: 1px solid #30313e; border-radius: 6px; padding: 14px; }
       input[type=range] { flex: 1; accent-color: #9395bc; }
       .toolbar label { display: flex; align-items: center; gap: 7px; }
@@ -31,15 +31,15 @@
       <div><h1>Poietra · Glow</h1><p id="scene-details">描画を準備しています</p></div>
       <div class="toolbar">
         <label><input id="glow" type="checkbox" checked /> Glow</label>
-        <button id="save-mp4" type="button">MP4 保存</button>
-        <button id="save-webm" type="button">WebM 保存</button>
+        <button id="save-mp4" type="button" disabled>MP4 保存</button>
+        <button id="save-webm" type="button" disabled>WebM 保存</button>
         <button id="cancel" type="button" disabled>書き出しを中断</button>
       </div>
     </header>
     <main>
       <div class="panes">
-        <section><h2>Canvas プレビュー · <span id="backend">準備中</span></h2><canvas id="preview" width="1280" height="720"></canvas></section>
-        <section><h2>保存した動画の同時刻フレーム</h2><canvas id="decoded" width="1280" height="720"></canvas></section>
+        <section><h2>Canvas プレビュー · <span id="backend">準備中</span></h2><canvas id="preview"></canvas></section>
+        <section><h2>保存した動画の同時刻フレーム</h2><canvas id="decoded"></canvas></section>
       </div>
       <div class="transport">
         <button id="play" type="button">再生</button>

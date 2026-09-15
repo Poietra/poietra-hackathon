@@ -61,6 +61,12 @@ export function measureText(text: string, size: number): TextMetrics {
   const measurements = lines.map(line => context!.measureText(line));
   const ascent = Math.max(size * 0.8, ...measurements.map(metrics => metrics.actualBoundingBoxAscent));
   const descent = Math.max(size * 0.2, ...measurements.map(metrics => metrics.actualBoundingBoxDescent));
-  const width = Math.max(0, ...measurements.map(metrics => Math.max(metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight)));
+  // SVG text-anchor="middle" centers the advance, not the ink. Keep either glyph
+  // overhang inside a symmetric crop around that same anchor (for example Inter's j).
+  const width = Math.max(0, ...measurements.map(metrics => 2 * Math.max(
+    metrics.width / 2,
+    metrics.width / 2 + metrics.actualBoundingBoxLeft,
+    metrics.actualBoundingBoxRight - metrics.width / 2,
+  )));
   return { width, height: ascent + descent + (lines.length - 1) * lineHeight, lineHeight, baseline: (ascent - descent) / 2 };
 }

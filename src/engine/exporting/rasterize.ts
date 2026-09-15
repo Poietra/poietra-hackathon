@@ -1,7 +1,7 @@
-import { checkAbort, exportAbortError } from './abort';
+import { withSvgImage } from '../rendering/svg-image';
 
 /** SVGs come from the same renderer as preview, including embedded local fonts. */
-export async function drawSvgFrame(
+export function drawSvgFrame(
   svg: string,
   context: CanvasRenderingContext2D,
   width: number,
@@ -11,21 +11,7 @@ export async function drawSvgFrame(
   background: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  checkAbort(signal);
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-  const image = new Image();
-  let removeAbort = () => {};
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const abort = () => reject(exportAbortError());
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error('フレームを画像に変換できませんでした。ページを再読み込みしてお試しください。'));
-      signal?.addEventListener('abort', abort, { once: true });
-      removeAbort = () => signal?.removeEventListener('abort', abort);
-      image.src = url;
-      if (signal?.aborted) abort();
-    });
-    checkAbort(signal);
+  return withSvgImage(svg, signal, image => {
     // Preserve scene coordinates and aspect ratio, including when the user chooses another output size.
     const scale = Math.min(width / sceneWidth, height / sceneHeight);
     const drawWidth = sceneWidth * scale;
@@ -35,11 +21,5 @@ export async function drawSvgFrame(
     context.fillStyle = background;
     context.fillRect(0, 0, width, height);
     context.drawImage(image, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
-  } finally {
-    removeAbort();
-    image.onload = null;
-    image.onerror = null;
-    image.src = '';
-    URL.revokeObjectURL(url);
-  }
+  });
 }

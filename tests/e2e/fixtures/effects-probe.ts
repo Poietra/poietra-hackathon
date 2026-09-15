@@ -1,4 +1,6 @@
 /** Test-only observation: the production painter needs no instrumentation API. */
+const CONTEXT_LOSS_TIMEOUT_MS = 5000;
+
 export function installEffectsProbe(disableWebgl = false) {
   const contexts: WebGL2RenderingContext[] = [];
   const live = new Map<object, string>();
@@ -36,7 +38,7 @@ export function installEffectsProbe(disableWebgl = false) {
     contexts,
     snapshot() { return { liveGpuResources: live.size, liveObjectUrls: urls.size, allocations, contexts: contexts.length }; },
     environment() {
-      const gl = contexts.at(-1);
+      const gl = contexts.findLast(context => !context.isContextLost());
       const info = gl?.getExtension('WEBGL_debug_renderer_info');
       return {
         userAgent: navigator.userAgent,
@@ -50,7 +52,7 @@ export function installEffectsProbe(disableWebgl = false) {
       const extension = gl.getExtension('WEBGL_lose_context');
       if (!extension) throw new Error('WEBGL_lose_context is unavailable.');
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Context loss event did not arrive.')), 5000);
+        const timeout = setTimeout(() => reject(new Error('Context loss event did not arrive.')), CONTEXT_LOSS_TIMEOUT_MS);
         gl.canvas.addEventListener('webglcontextlost', () => { clearTimeout(timeout); resolve(); }, { once: true });
         extension.loseContext();
       });

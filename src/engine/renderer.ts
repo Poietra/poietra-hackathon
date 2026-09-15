@@ -1,7 +1,8 @@
 import type { Scene } from '../../shared/model';
 import type { Frame, RenderObject } from './evaluate';
 import type { ObjectBounds, SvgOptions } from './render-contract';
-import { equationMarkup, getEquation, prepareEquations } from './rendering/equations';
+import { GLOW_STYLE } from './effects/glow-style';
+import { EQUATION_UNITS_PER_EM, EQUATION_WRITE_STROKE_UNITS, equationMarkup, getEquation, prepareEquations } from './rendering/equations';
 import { embeddedFontStyles, FONT_FAMILY, measureText, prepareFonts } from './rendering/fonts';
 import { color, escapeXml, finite, number as n, safeId, unit } from './rendering/svg';
 
@@ -44,7 +45,7 @@ function cubicRange(p1: number, p2: number, p3: number): [number, number] {
 function textSize(item: RenderObject): { width: number; height: number } {
   const size = Math.max(0, finite(item.state.fontSize));
   const equation = item.object.kind === 'equation' && getEquation(item.state.text);
-  if (equation) return { width: equation.width * size / 1000, height: equation.height * size / 1000 };
+  if (equation) return { width: equation.width * size / EQUATION_UNITS_PER_EM, height: equation.height * size / EQUATION_UNITS_PER_EM };
   return measureText(item.state.text, size);
 }
 
@@ -52,7 +53,9 @@ function textSize(item: RenderObject): { width: number; height: number } {
 export function objectBounds(item: RenderObject): ObjectBounds {
   const s = item.state;
   const x = finite(s.x), y = finite(s.y), width = finite(s.width), height = finite(s.height);
-  const stroke = Math.max(0, finite(s.strokeWidth)) / 2;
+  const writingEquation = item.object.kind === 'equation' && item.writeProgress > 0 && item.writeProgress < 1 && getEquation(s.text);
+  const writeStroke = writingEquation ? EQUATION_WRITE_STROKE_UNITS * Math.max(0, finite(s.fontSize)) / EQUATION_UNITS_PER_EM : 0;
+  const stroke = Math.max(0, finite(s.strokeWidth), writeStroke) / 2;
   let bounds: ObjectBounds;
   if (item.object.kind === 'path') {
     const xs = cubicRange(finite(s.path.c1.x), finite(s.path.c2.x), width);
@@ -98,7 +101,7 @@ function shapeMarkup(item: RenderObject, prefix: string): string {
   if (kind === 'equation') {
     const equation = getEquation(s.text);
     if (!equation) return textMarkup(item, prefix);
-    const scale = Math.max(0, finite(s.fontSize)) / 1000;
+    const scale = Math.max(0, finite(s.fontSize)) / EQUATION_UNITS_PER_EM;
     return `<g transform="scale(${n(scale)}) translate(${n(-equation.x - equation.width / 2)} ${n(-equation.y - equation.height / 2)})" fill="currentColor" stroke="none">${equationMarkup(equation, progress, item.order)}</g>`;
   }
   if (kind === 'circle') return `<ellipse cx="0" cy="0" rx="${n(Math.abs(width) / 2)}" ry="${n(Math.abs(height) / 2)}" fill-opacity="${n(progress)}"${draw}/>`;
@@ -120,7 +123,8 @@ export function frameToSvg(frame: Frame, options: SvgOptions = {}): string {
     if (!item.state.visible || unit(item.state.opacity) === 0 || unit(item.writeProgress) === 0) return '';
     const s = item.state, id = `${prefix}-${index}`, glow = s.effect === 'glow';
     const bounds = glow ? objectBounds(item) : null;
-    const filter = glow ? `<defs><filter id="${id}-glow" filterUnits="userSpaceOnUse" x="${n(bounds!.x - s.x - 16)}" y="${n(bounds!.y - s.y - 16)}" width="${n(bounds!.width + 32)}" height="${n(bounds!.height + 32)}" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="4"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>` : '';
+    const halo = GLOW_STYLE.sigmaScenePixels * GLOW_STYLE.cutoffStandardDeviations;
+    const filter = glow ? `<defs><filter id="${id}-glow" filterUnits="userSpaceOnUse" x="${n(bounds!.x - s.x - halo)}" y="${n(bounds!.y - s.y - halo)}" width="${n(bounds!.width + halo * 2)}" height="${n(bounds!.height + halo * 2)}" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="${GLOW_STYLE.sigmaScenePixels}"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>` : '';
     return `${filter}<g data-object-id="${escapeXml(item.object.id)}" transform="translate(${n(s.x)} ${n(s.y)}) rotate(${n(s.rotation)})" opacity="${n(unit(s.opacity))}" fill="${escapeXml(color(s.fill))}" color="${escapeXml(color(s.fill, '#d7d8e4'))}" stroke="${escapeXml(color(s.stroke))}" stroke-width="${n(Math.max(0, finite(s.strokeWidth)))}" stroke-linecap="round" stroke-linejoin="round"${glow ? ` filter="url(#${id}-glow)"` : ''}>${shapeMarkup(item, id)}</g>`;
   }).join('');
   const fontStyles = embeddedFontStyles(frame.objects.filter(item => item.object.kind === 'text' || (item.object.kind === 'equation' && !getEquation(item.state.text))).map(item => item.state.text));

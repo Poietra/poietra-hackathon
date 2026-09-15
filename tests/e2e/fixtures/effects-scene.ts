@@ -49,9 +49,9 @@ export function setSceneGlow(scene: Scene, enabled: boolean): Scene {
   return copy;
 }
 
-export const BENCHMARK = { count: 16, columns: 4, rows: 4, width: 1280, height: 720, warmup: 8, frames: 60 };
+export const BENCHMARK = { count: 16, columns: 4, rows: 4, width: 1280, height: 720, fps: 30, warmup: 8, frames: 60 };
 
-export function makeBenchmarkScene(): Scene {
+export function makeBenchmarkScene(withWrite = true): Scene {
   const scene = makeEffectsScene();
   scene.objects = {};
   for (const composition of Object.values(scene.compositions)) composition.states = {};
@@ -75,7 +75,7 @@ export function makeBenchmarkScene(): Scene {
     scene.compositions[scene.compositionOrder[0]].states[id] = state;
     scene.compositions[scene.compositionOrder[1]].states[id] = { ...structuredClone(state), x: x + 45, rotation: 35, opacity: 0.8 };
     transition.tracks[id] = defaultTrack(id, {
-      type: kind === 'equation' ? 'write' : 'move', duration: transition.duration,
+      type: withWrite && kind === 'equation' ? 'write' : 'move', duration: transition.duration,
     });
   }
   return scene;

@@ -1,31 +1,89 @@
 import type { Frame, RenderObject } from '../evaluate';
+import type { ObjectBounds } from '../render-contract';
 import { frameToSvg, objectBounds } from '../renderer';
 import { GLOW_STYLE, type GlowRenderer } from '../effects/glow';
+import { withSvgImage } from './svg-image';
 
-// A one-pixel border keeps antialiased edges inside the raster before rotation.
+// One output pixel keeps antialiased edges inside the raster before rotation.
 const EDGE_PADDING_PIXELS = 1;
 const RGBA_BYTES_PER_PIXEL = 4;
-// Bound retained object rasters to 32 MiB per painter, independently of scene length.
+// Bound retained bitmaps per painter, independently of the number of exported frames.
 const RASTER_CACHE_BYTES = 32 * 1024 * 1024;
 
-interface Layer {
-  key: string;
+export interface RasterLayer {
   canvas: HTMLCanvasElement;
-  left: number;
-  top: number;
-  width: number;
-  height: number;
+  sceneBounds: ObjectBounds;
+}
+
+interface CachedLayer extends RasterLayer {
+  key: string;
   bytes: number;
 }
 
-function release(layer: Layer) {
+function release(layer: RasterLayer) {
   layer.canvas.width = 0;
   layer.canvas.height = 0;
 }
 
-/** Reuse local object pixels while position, rotation, opacity, or layer order changes. */
+/** Only local appearance belongs in a raster; transforms apply after Glow. */
+function localObject(item: RenderObject): RenderObject {
+  return {
+    ...item,
+    state: { ...item.state, x: 0, y: 0, rotation: 0, opacity: 1, visible: true, effect: 'none' },
+  };
+}
+
+function rasterBounds(item: RenderObject, scale: number, hasGlow: boolean) {
+  const bounds = objectBounds(item);
+  const halo = hasGlow ? GLOW_STYLE.sigmaScenePixels * GLOW_STYLE.cutoffStandardDeviations : 0;
+  const padding = halo + EDGE_PADDING_PIXELS / scale;
+  const pixelWidth = Math.max(1, Math.ceil((bounds.width + padding * 2) * scale));
+  const pixelHeight = Math.max(1, Math.ceil((bounds.height + padding * 2) * scale));
+  const sceneBounds: ObjectBounds = {
+    x: bounds.x - padding, y: bounds.y - padding,
+    width: pixelWidth / scale, height: pixelHeight / scale,
+  };
+  return { sceneBounds, pixelWidth, pixelHeight };
+}
+
+/** Null requests full-frame SVG fallback when an object cannot use the GPU route. */
+async function rasterizeLayer(item: RenderObject, key: string, scale: number, hasGlow: boolean, glow: GlowRenderer, signal: AbortSignal): Promise<CachedLayer | null> {
+  const { sceneBounds, pixelWidth, pixelHeight } = rasterBounds(item, scale, hasGlow);
+  const bytes = pixelWidth * pixelHeight * RGBA_BYTES_PER_PIXEL;
+  // Full-frame SVG clips oversized objects without allocating an unbounded cutout.
+  if (!Number.isFinite(bytes) || bytes > RASTER_CACHE_BYTES) return null;
+  const frame: Frame = {
+    background: 'transparent', width: sceneBounds.width, height: sceneBounds.height,
+    objects: [{ ...item, state: { ...item.state, x: -sceneBounds.x, y: -sceneBounds.y } }],
+  };
+  // Keep Scene coordinates in viewBox, and rasterize at the output pixel density.
+  const svg = frameToSvg(frame, { background: false, idPrefix: 'painter-layer' })
+    .replace(/<svg\b[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelWidth}" height="${pixelHeight}" viewBox="0 0 ${sceneBounds.width} ${sceneBounds.height}">`);
+  return withSvgImage(svg, signal, image => {
+    if (glow.lost) return null;
+    if (hasGlow) {
+      try { glow.render(image, pixelWidth, pixelHeight, GLOW_STYLE.sigmaScenePixels * scale); }
+      catch { return null; }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+    try {
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('オブジェクトを描画する Canvas を作成できませんでした。');
+      context.drawImage(hasGlow ? glow.canvas : image, 0, 0);
+      return { key, canvas, sceneBounds, bytes };
+    } catch (error) {
+      canvas.width = 0;
+      canvas.height = 0;
+      throw error;
+    }
+  });
+}
+
+/** Keep the latest raster per object; unchanged objects are reused during movement. */
 export class LayerCache {
-  private readonly entries = new Map<string, Layer>();
+  private readonly entries = new Map<string, CachedLayer>();
   private bytes = 0;
 
   clear() {
@@ -46,88 +104,36 @@ export class LayerCache {
     release(layer);
   }
 
-  async get(item: RenderObject, scale: number, glow: GlowRenderer, signal: AbortSignal): Promise<Layer> {
+  private store(id: string, layer: CachedLayer) {
+    this.remove(id);
+    while (this.bytes + layer.bytes > RASTER_CACHE_BYTES) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.remove(oldest);
+    }
+    this.entries.set(id, layer);
+    this.bytes += layer.bytes;
+  }
+
+  async get(item: RenderObject, scale: number, glow: GlowRenderer, signal: AbortSignal): Promise<RasterLayer | null> {
     signal.throwIfAborted();
+    const local = localObject(item);
     const hasGlow = item.state.effect === 'glow';
-    // Transform and opacity apply to the completed object, including its halo.
-    const local: RenderObject = {
-      ...item,
-      state: { ...item.state, x: 0, y: 0, rotation: 0, opacity: 1, visible: true, effect: 'none' },
-    };
     const key = JSON.stringify([item.object.kind, local.state, item.writeProgress, item.order, scale, hasGlow]);
-    const previous = this.entries.get(item.object.id);
+    const id = item.object.id;
+    const previous = this.entries.get(id);
     if (previous?.key === key) {
-      this.entries.delete(item.object.id);
-      this.entries.set(item.object.id, previous);
+      // Map insertion order is the eviction order; a cache hit becomes most recent.
+      this.entries.delete(id);
+      this.entries.set(id, previous);
       return previous;
     }
-
-    const bounds = objectBounds(local);
-    const sigma = hasGlow ? GLOW_STYLE.sigmaScenePixels : 0;
-    const padding = sigma * GLOW_STYLE.cutoffStandardDeviations + EDGE_PADDING_PIXELS / scale;
-    const left = bounds.x - padding;
-    const top = bounds.y - padding;
-    const width = Math.max(1, Math.ceil((bounds.width + padding * 2) * scale));
-    const height = Math.max(1, Math.ceil((bounds.height + padding * 2) * scale));
-    const bytes = width * height * RGBA_BYTES_PER_PIXEL;
-    if (!Number.isFinite(bytes) || bytes > RASTER_CACHE_BYTES) {
-      // The full-frame SVG fallback can clip oversized objects without allocating a huge cutout.
-      throw new Error('The object raster exceeds the painter cache budget.');
-    }
-    const sceneWidth = width / scale;
-    const sceneHeight = height / scale;
-    const frame: Frame = {
-      background: 'transparent', width: sceneWidth, height: sceneHeight,
-      objects: [{ ...local, state: { ...local.state, x: -left, y: -top } }],
-    };
-    // Preserve the generated SVG's scene coordinates while rasterizing at the output density.
-    const svg = frameToSvg(frame, { background: false, idPrefix: 'painter-layer' })
-      .replace(/<svg\b[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${sceneWidth} ${sceneHeight}">`);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('オブジェクトを描画する Canvas を作成できませんでした。');
-    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-    const image = new Image();
-    let removeAbort = () => {};
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const abort = () => reject(signal.reason);
-        image.onload = () => resolve();
-        image.onerror = () => reject(new Error('オブジェクトの画像を読み込めませんでした。'));
-        signal.addEventListener('abort', abort, { once: true });
-        removeAbort = () => signal.removeEventListener('abort', abort);
-        image.src = url;
-        if (signal.aborted) abort();
-      });
+    const layer = await rasterizeLayer(local, key, scale, hasGlow, glow, signal);
+    if (signal.aborted) {
+      if (layer) release(layer);
       signal.throwIfAborted();
-      if (glow.lost) throw new Error('The WebGL context was lost.');
-      if (hasGlow) {
-        glow.render(image, width, height, sigma * scale);
-        context.drawImage(glow.canvas, 0, 0);
-      } else {
-        context.drawImage(image, 0, 0);
-      }
-      signal.throwIfAborted();
-      const layer = { key, canvas, left, top, width: sceneWidth, height: sceneHeight, bytes };
-      this.remove(item.object.id);
-      while (this.bytes + bytes > RASTER_CACHE_BYTES && this.entries.size) {
-        this.remove(this.entries.keys().next().value!);
-      }
-      this.entries.set(item.object.id, layer);
-      this.bytes += bytes;
-      return layer;
-    } catch (error) {
-      canvas.width = 0;
-      canvas.height = 0;
-      throw error;
-    } finally {
-      removeAbort();
-      image.onload = null;
-      image.onerror = null;
-      image.src = '';
-      URL.revokeObjectURL(url);
     }
+    if (layer) this.store(id, layer);
+    return layer;
   }
 }
