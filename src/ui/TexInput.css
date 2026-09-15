@@ -1,0 +1,6 @@
+.tex-input{display:flex;flex-direction:column;gap:6px}
+.tex-completions{list-style:none;margin:0;padding:4px;border:1px solid #3c3c46;border-radius:6px;background:#1c1c23;max-height:196px;overflow:auto}
+.tex-completions li{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:4px;font-size:11px;color:#c9c7d5;cursor:pointer}
+.tex-completions li.active{background:#343155;color:#e4e2ee}
+.tex-completions code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tex-completions span{margin-left:auto;flex-shrink:0;color:var(--muted);font-size:10px}

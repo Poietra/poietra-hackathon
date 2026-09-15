@@ -118,3 +118,36 @@ test('grabbing the canvas commits an unfinished Inspector value before starting 
   await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
   await expect(input).toHaveValue('500');
 });
+
+test('LaTeX completion lists commands, inserts snippets with the caret inside the first braces, and stays quiet for line breaks', async ({ page }) => {
+  await page.goto(`/?room=${crypto.randomUUID()}`); await expect(page.getByText('Live', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Composition 2', exact: true }).click();
+  await page.getByRole('button', { name: 'Equation', exact: true }).click();
+  const input = page.getByRole('textbox', { name: 'LaTeX expression', exact: true });
+  const options = page.getByRole('listbox', { name: 'LaTeX の候補', exact: true }).getByRole('option');
+  await input.fill('y = '); await page.keyboard.type('\\fr');
+  await expect(options).toHaveText([/^\\frac\{\}\{\}/]);
+  await page.keyboard.press('Enter');
+  await expect(input).toHaveValue('y = \\frac{}{}');
+  await page.keyboard.type('a');
+  await expect(input).toHaveValue('y = \\frac{a}{}');
+  await expect(options).toHaveCount(0);
+  await page.keyboard.type(' \\alp'); await page.keyboard.press('Tab');
+  await expect(input).toHaveValue('y = \\frac{a \\alpha}{}'); await expect(input).toBeFocused();
+  await page.keyboard.type(' \\s');
+  await expect(options.first()).toHaveText(/^\\sum/);
+  await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowUp');
+  await expect(options.nth(1)).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Escape');
+  await expect(options).toHaveCount(0);
+  await expect(input).toHaveValue('y = \\frac{a \\alpha \\s}{}');
+  await expect(page.locator('.layer-row.selected')).toHaveCount(1);
+  await page.keyboard.type('\\\\');
+  await expect(options).toHaveCount(0);
+  await page.keyboard.type('\\beta');
+  await expect(options).toHaveCount(0);
+  await page.keyboard.type(' \\ome');
+  await page.getByRole('option', { name: '\\omega ω', exact: true }).click();
+  await expect(input).toHaveValue('y = \\frac{a \\alpha \\s\\\\\\beta \\omega}{}'); await expect(input).toBeFocused();
+  await expect(page.locator('[data-testid="stage-main"] .scene-svg [data-object-id="equation"]')).toBeVisible();
+});
