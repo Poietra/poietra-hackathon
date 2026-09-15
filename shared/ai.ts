@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getShared, getValue, type Change } from './document';
+import { getShared, getValue, readProject, type Change } from './document';
 import { defaultState, defaultTrack, newId, type AnimationTrack, type ObjectKind, type Project } from './model';
 import * as Y from 'yjs';
 
@@ -67,7 +67,9 @@ export function validateProposalForApply(doc: Y.Doc, proposal: EditProposal): vo
     const current = getValue(doc, guard.path);
     if ((guard.parentIdentity !== undefined && identityOf(doc, guard.path) !== guard.parentIdentity) || (current !== undefined) !== guard.existed || (guard.existed && !sameValue(current, guard.expected))) throw new Error('提案後に対象が変更されました。今の状態でもう一度依頼してください。');
   }
+  const project = readProject(doc);
   for (const change of proposal.changes) {
+    if (change.path[0] === 'scenes' && !project?.scenes[change.path[1]]) throw new Error('編集対象の Scene が削除されています。今の状態でもう一度依頼してください。');
     if (!(getShared(doc, change.path.slice(0, -1)) instanceof Y.Map)) throw new Error('編集対象が削除されています。今の状態でもう一度依頼してください。');
   }
   // Recheck final timing against the live document as well, including older proposals without guards.
@@ -101,6 +103,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
   const guardPaths = new Map<string, string[]>();
   const base = ['scenes', sceneId];
   const guard = (path: string[]) => { if (!safePath(path)) throw new Error('編集対象が無効です。'); guardPaths.set(pathKey(path), path); };
+  guard([...base, 'deleted']);
   // readProject derives the visible chain from raw order and tombstones. Track identity can stay
   // unchanged while its visible source changes, so parent-map identity alone is not enough.
   guard([...base, 'compositionOrder']);

@@ -20,7 +20,8 @@ export interface EditorContextValue {
   renderer: RendererContract;
   createFramePainter?: PainterContract['createFramePainter'];
   playhead: number;
-  seek: (time: number) => void;
+  seek: (time: number, scope?: 'scene' | 'transition') => void;
+  viewingPlayback?: boolean;
   playing: boolean;
   play: (scope?: 'scene' | 'transition') => void;
   previewScope: 'scene' | 'transition';

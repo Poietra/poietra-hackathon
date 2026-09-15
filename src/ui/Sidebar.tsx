@@ -13,7 +13,7 @@ export function ObjectIcon({ kind, size = 15 }: { kind: ObjectKind; size?: numbe
 }
 
 export function Sidebar({ onNewScene }: { onNewScene: () => void }) {
-  const { scene, store, compositionId, selectedIds, setSelectedIds, selection, select, notify } = useEditor();
+  const { scene, store, compositionId, selectedIds, setSelectedIds, selection, select, notify, viewingPlayback } = useEditor();
   const [searching, setSearching] = useState(false); const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState(new Set<string>());
   // The top row is the frontmost layer; SVG paints the reverse of this order.
@@ -39,11 +39,11 @@ export function Sidebar({ onNewScene }: { onNewScene: () => void }) {
     return <div key={object.id} data-layer-id={object.id} className={cn('layer-row', selectedIds.includes(object.id) && 'selected', nested && 'nested')}>
       <button className={cn('layer-select', !visible && 'dimmed')} onClick={event => setSelectedIds(event.shiftKey ? selectedIds.includes(object.id) ? selectedIds.filter(id => id !== object.id) : [...selectedIds, object.id] : [object.id])} aria-pressed={selectedIds.includes(object.id)}><ObjectIcon kind={object.kind}/><span>{object.name}</span></button>
       <button className="layer-visibility" aria-label={`${object.name} を${object.locked ? 'ロック解除' : 'ロック'}`} onClick={() => store.setObject(scene.id, object.id, { locked: !store.scene(scene.id).objects[object.id]?.locked })}>{object.locked ? <LockKeyhole size={12}/> : <UnlockKeyhole size={12}/>}</button>
-      <button className="layer-visibility" disabled={object.locked} aria-label={`${object.name} を${visible ? '非表示' : '表示'}`} onClick={() => { if (!store.scene(scene.id).objects[object.id]?.locked) store.updateState(scene.id, compositionId, object.id, { visible: !visible }); }}>{visible ? <Eye size={13}/> : <EyeOff size={13}/>}</button>
+      <button className="layer-visibility" disabled={object.locked || viewingPlayback} aria-label={`${object.name} を${visible ? '非表示' : '表示'}`} onClick={() => { if (!store.scene(scene.id).objects[object.id]?.locked) store.updateState(scene.id, compositionId, object.id, { visible: !visible }); }}>{visible ? <Eye size={13}/> : <EyeOff size={13}/>}</button>
     </div>;
   }
   return <aside className="left-panel">
-    <div className="new-scene-row"><button className="new-scene-button" onClick={onNewScene}><Square size={13}/><span>New scene</span><span className="shortcut">＋</span></button><IconButton label="レイヤーを検索" active={searching} onClick={() => setSearching(!searching)}><Search size={15}/></IconButton></div>
+    <div className="new-scene-row"><button className="new-scene-button" onClick={onNewScene} disabled={(store.snapshot().project?.sceneOrder.length ?? 0) >= 100}><Square size={13}/><span>New scene</span><span className="shortcut">＋</span></button><IconButton label="レイヤーを検索" active={searching} onClick={() => setSearching(!searching)}><Search size={15}/></IconButton></div>
     <div className="sidebar-scene-title"><span>Scenes</span><ChevronDown size={13}/></div>
     <div className="sidebar-section-heading"><span>Layers</span><span className="muted">{Object.keys(scene.objects).length}</span></div>
     {searching && <div className="layer-search"><Search size={13}/><input autoFocus aria-label="レイヤーを検索" placeholder="Find a layer…" value={query} onChange={e => setQuery(e.target.value)}/></div>}

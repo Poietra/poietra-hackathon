@@ -5,6 +5,7 @@ import { applyChanges, getShared, getValue, initializeDocument, LOCAL_ORIGIN, re
 import { makeDemoProject } from '../shared/demo';
 import { defaultTrack } from '../shared/model';
 import { deleteComposition } from '../src/editor/structure';
+import { duplicateScene, deleteScene } from '../src/editor/scenes';
 
 const docs: Y.Doc[] = [];
 const fixture = (three = false) => {
@@ -26,6 +27,29 @@ const proposePath = (doc: Y.Doc) => compileProposal(doc, readProject(doc)!, 'sce
 afterEach(() => { for (const doc of docs.splice(0)) doc.destroy(); });
 
 describe('AI proposals across projected composition structure', () => {
+  test('a deleted scene rejects both current and legacy proposals, and Undo restores the original guards', () => {
+    const doc = fixture(); duplicateScene(doc, 'scene-1');
+    const proposal = proposeState(doc);
+    const undo = new Y.UndoManager(doc.getMap('project'), { trackedOrigins: new Set([LOCAL_ORIGIN]) });
+    deleteScene(doc, 'scene-1');
+    expect(readProject(doc)!.scenes['scene-1']).toBeUndefined();
+    expect(() => validateProposalForApply(doc, proposal)).toThrow('提案後');
+    expect(() => validateProposalForApply(doc, { ...proposal, guards: [] })).toThrow('Scene が削除');
+    undo.undo();
+    expect(() => validateProposalForApply(doc, proposal)).not.toThrow();
+    undo.destroy();
+  });
+
+  test('an unchanged fallback scene stays editable, while disappearing from the project rejects its proposal', () => {
+    const doc = fixture(); const other = duplicateScene(doc, 'scene-1');
+    applyChanges(doc, [{ path: ['scenes', 'scene-1', 'deleted'], value: true }, { path: ['scenes', other, 'deleted'], value: true }]);
+    const proposal = proposeState(doc);
+    expect(() => validateProposalForApply(doc, proposal)).not.toThrow();
+    // The fallback's own raw map does not change when another scene is revived.
+    applyChanges(doc, [{ path: ['scenes', other, 'deleted'], value: false }]);
+    expect(() => validateProposalForApply(doc, proposal)).toThrow('Scene が削除');
+  });
+
   test('legacy metadata is guarded as absent; logical deletion rejects a proposal and undo restores its validity', () => {
     const doc = fixture(); const proposal = proposeState(doc);
     expect(proposal.guards).toContainEqual(expect.objectContaining({ path: composition('comp-1', 'deleted'), expected: null, existed: false }));
