@@ -55,7 +55,7 @@ const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 
 const SERVICE_TIERS = ['flex', 'scale', 'priority', 'fast', 'ultrafast'] as const;
 /** Unset variables keep the fast defaults; "default" or "off" removes the parameter. */
 export function responseTuning(env: { OPENAI_REASONING_EFFORT?: string; OPENAI_SERVICE_TIER?: string }): ResponseTuning {
-  const effort = env.OPENAI_REASONING_EFFORT ?? 'low', tier = env.OPENAI_SERVICE_TIER ?? 'fast';
+  const effort = env.OPENAI_REASONING_EFFORT ?? 'medium', tier = env.OPENAI_SERVICE_TIER ?? 'fast';
   return {
     ...((REASONING_EFFORTS as readonly string[]).includes(effort) ? { reasoningEffort: effort as ResponseTuning['reasoningEffort'] } : {}),
     ...((SERVICE_TIERS as readonly string[]).includes(tier) ? { serviceTier: tier as ResponseTuning['serviceTier'] } : {}),

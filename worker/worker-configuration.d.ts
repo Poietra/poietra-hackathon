@@ -7,7 +7,7 @@ interface __BaseEnv_Env {
 	OPENAI_MODEL: "gpt-6-astra";
 	OPENAI_IMAGE_MODEL: "gpt-image-1";
 	OPENAI_IMAGE_QUALITY: "medium";
-	OPENAI_REASONING_EFFORT: "low";
+	OPENAI_REASONING_EFFORT: "medium";
 	OPENAI_SERVICE_TIER: "fast";
 	OPENAI_API_KEY: string;
 	ROOMS: DurableObjectNamespace<import("./index").ProjectRoom>;
