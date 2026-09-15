@@ -124,7 +124,7 @@ test('Ctrl+Enter sends a @codex request and applies the guarded proposal without
   await composer.fill('@codex 円を中央にしてください'); await composer.press('Control+Enter');
   await expect(page.getByText('Applied', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Apply edits' })).toHaveCount(0);
-  await expect(page.getByRole('status')).toContainText('即適用');
+  await expect(page.locator('.toast')).toContainText('即適用');
   await design(page); await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('640');
   await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
   await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('245');
