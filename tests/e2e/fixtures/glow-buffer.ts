@@ -1,6 +1,9 @@
 import { defaultState } from '../../../shared/model';
 import { createGlowRenderer } from '../../../src/engine/effects/glow';
 import { createFramePainter } from '../../../src/engine/painter';
+import type { Frame } from '../../../src/engine/evaluate';
+import { frameToSvg } from '../../../src/engine/renderer';
+import { withSvgImage } from '../../../src/engine/rendering/svg-image';
 import { installEffectsProbe } from './effects-probe';
 
 const probe = installEffectsProbe();
@@ -141,9 +144,152 @@ async function invalidExtentFallback() {
   } finally { renderer.dispose(); source.width = 0; source.height = 0; }
 }
 
+type TextureFailure = 'incomplete-framebuffer' | 'allocation';
+
+/** Corrupt real texture storage calls; error flags still come from WebGL. */
+function injectTextureFailure(kind: TextureFailure) {
+  const prototype = WebGL2RenderingContext.prototype;
+  const framebufferTexture2D = prototype.framebufferTexture2D;
+  const texImage2D = prototype.texImage2D;
+  const getError = prototype.getError;
+  const attachedTextures = new Set<WebGLTexture>();
+  const errors: number[] = [];
+  let enabled = false;
+  let injectedFailures = 0;
+  prototype.framebufferTexture2D = function (target, attachment, textarget, texture, level) {
+    if (texture) attachedTextures.add(texture);
+    framebufferTexture2D.call(this, target, attachment, textarget, texture, level);
+  };
+  prototype.texImage2D = function (this: WebGL2RenderingContext, ...args: unknown[]) {
+    if (enabled && args.length === 9 && args[8] === null
+      && attachedTextures.has(this.getParameter(this.TEXTURE_BINDING_2D) as WebGLTexture)) {
+      // Zero-sized attachments make real blur framebuffers incomplete. A negative
+      // width instead raises INVALID_VALUE and leaves earlier valid storage intact.
+      args[3] = kind === 'incomplete-framebuffer' ? 0 : -1;
+      if (kind === 'incomplete-framebuffer') args[4] = 0;
+      injectedFailures++;
+    }
+    Reflect.apply(texImage2D, this, args);
+  } as typeof texImage2D;
+  prototype.getError = function () {
+    const error = getError.call(this);
+    if (enabled && error !== this.NO_ERROR) errors.push(error);
+    return error;
+  };
+  return {
+    errors,
+    get injectedFailures() { return injectedFailures; },
+    enable() { enabled = true; },
+    disable() { enabled = false; },
+    restore() {
+      prototype.framebufferTexture2D = framebufferTexture2D;
+      prototype.texImage2D = texImage2D;
+      prototype.getError = getError;
+    },
+  };
+}
+
+function glowFrame(width: number, height: number, objectSize: number): Frame {
+  return {
+    width, height, background: '#000000', objects: [{
+      object: { id: 'fault-fallback', name: 'Fault fallback', kind: 'rectangle', groupId: null, locked: false, order: 0 },
+      state: defaultState('rectangle', {
+        x: width / 2, y: height / 2, width: objectSize, height: objectSize,
+        cornerRadius: 0, fill: '#67c4d9', strokeWidth: 0, effect: 'glow',
+      }),
+      writeProgress: 1, order: 'together',
+    }],
+  };
+}
+
+async function textureFailureFallback(kind: TextureFailure) {
+  const baseline = probe.snapshot();
+  const target = makeSource(128, 128);
+  const targetContext = target.getContext('2d')!;
+  const drawImage = targetContext.drawImage;
+  const reference = document.createElement('canvas');
+  reference.width = target.width; reference.height = target.height;
+  const fault = injectTextureFailure(kind);
+  let painter: Awaited<ReturnType<typeof createFramePainter>> | undefined;
+  let publications = 0;
+  try {
+    painter = await createFramePainter(target);
+    const backendAfterCreation = painter.backend;
+    // Retain larger valid attachments before an allocation error. Subsequent
+    // draws can then succeed with stale storage, so allocation errors must also
+    // be detected before publication, independently of framebuffer completeness.
+    if (kind === 'allocation') await painter.render(glowFrame(target.width, target.height, target.width / 2));
+    const backendBeforeFailure = painter.backend;
+    targetContext.drawImage = function (...args: unknown[]) {
+      publications++;
+      Reflect.apply(drawImage, targetContext, args);
+    } as typeof drawImage;
+    fault.enable();
+    const frame = glowFrame(target.width, target.height, target.width / 4);
+    await painter.render(frame);
+    fault.disable();
+    await withSvgImage(frameToSvg(frame), undefined, image => reference.getContext('2d')!.drawImage(image, 0, 0));
+    return {
+      baseline, injectedFailures: fault.injectedFailures, errors: fault.errors, publications,
+      expectedError: kind === 'incomplete-framebuffer'
+        ? WebGL2RenderingContext.INVALID_FRAMEBUFFER_OPERATION : WebGL2RenderingContext.INVALID_VALUE,
+      backendAfterCreation, backendBeforeFailure, backendAfterRender: painter.backend,
+      afterFallback: probe.snapshot(),
+      fallback: compare(outputPixels(target), outputPixels(reference)),
+      releasedCanvasExtents: probe.contexts.slice(baseline.contexts).map(context => ({ width: context.canvas.width, height: context.canvas.height })),
+    };
+  } finally {
+    fault.restore();
+    targetContext.drawImage = drawImage;
+    painter?.dispose();
+    target.width = 0; target.height = 0;
+    reference.width = 0; reference.height = 0;
+  }
+}
+
+function allocationRetry() {
+  const baseline = probe.snapshot();
+  const previousExtent = { width: 160, height: 96 };
+  const changedExtent = { width: 80, height: 64 };
+  const sigma = 4;
+  const samples = [];
+  for (const [name, extent] of [['changed', changedExtent], ['previous', previousExtent]] as const) {
+    const fault = injectTextureFailure('allocation');
+    const renderer = createGlowRenderer();
+    const previous = makeSource(previousExtent.width, previousExtent.height);
+    const changed = makeSource(changedExtent.width, changedExtent.height);
+    let reference: ReturnType<typeof createGlowRenderer> = null;
+    try {
+      if (!renderer) throw new Error('This regression requires a real WebGL2 renderer.');
+      renderer.render(previous, previous.width, previous.height, sigma);
+      fault.enable();
+      let error = '';
+      try { renderer.render(changed, changed.width, changed.height, sigma); }
+      catch (failure) { error = (failure as Error).message; }
+      fault.disable();
+      const source = name === 'changed' ? changed : previous;
+      renderer.render(source, extent.width, extent.height, sigma);
+      reference = createGlowRenderer();
+      if (!reference) throw new Error('Reference WebGL2 renderer creation failed.');
+      reference.render(source, extent.width, extent.height, sigma);
+      samples.push({ name, error, errors: [...fault.errors], injectedFailures: fault.injectedFailures,
+        comparison: compare(outputPixels(renderer.canvas), outputPixels(reference.canvas)) });
+    } finally {
+      fault.restore();
+      renderer?.dispose();
+      reference?.dispose();
+      previous.width = 0; previous.height = 0;
+      changed.width = 0; changed.height = 0;
+    }
+  }
+  return { baseline, samples, expectedError: WebGL2RenderingContext.INVALID_VALUE, released: probe.snapshot() };
+}
+
 const fixture = {
   bufferSequence,
   async invalidExtentFallback() { return { ...await invalidExtentFallback(), released: probe.snapshot() }; },
+  async textureFailureFallback(kind: TextureFailure) { return { ...await textureFailureFallback(kind), released: probe.snapshot() }; },
+  allocationRetry,
 };
 declare global { interface Window { glowBufferFixture: typeof fixture; } }
 window.glowBufferFixture = fixture;
