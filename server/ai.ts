@@ -6,6 +6,8 @@ import { compileProposal, EditProposalSchema, GENERATED_IMAGE_SIZES, MAX_GENERAT
 import { AiHistorySchema } from '../shared/ai-conversation';
 import { readProject } from '../shared/document';
 import { IMAGE_BYTES_LIMIT, imageMime, type ImageAsset } from '../shared/images';
+import type { ReasoningEffort } from 'openai/resources/shared';
+import type { ServiceTier } from 'openai/resources/responses/responses';
 
 export const ROOM_PATTERN = /^[a-zA-Z0-9_-]{16,80}$/;
 export const AiRequestSchema = z.object({
@@ -46,6 +48,21 @@ export interface ImageGeneration {
 export function imageQuality(value: string | undefined): ImageGeneration['quality'] {
   return value === 'low' || value === 'high' ? value : 'medium';
 }
+
+/** Latency levers for the text model; either may be refused by a model or account. */
+export interface ResponseTuning { reasoningEffort?: Exclude<ReasoningEffort, null>; serviceTier?: Exclude<ServiceTier, null> }
+const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const SERVICE_TIERS = ['flex', 'scale', 'priority', 'fast', 'ultrafast'] as const;
+/** Unset variables keep the fast defaults; "default" or "off" removes the parameter. */
+export function responseTuning(env: { OPENAI_REASONING_EFFORT?: string; OPENAI_SERVICE_TIER?: string }): ResponseTuning {
+  const effort = env.OPENAI_REASONING_EFFORT ?? 'low', tier = env.OPENAI_SERVICE_TIER ?? 'fast';
+  return {
+    ...((REASONING_EFFORTS as readonly string[]).includes(effort) ? { reasoningEffort: effort as ResponseTuning['reasoningEffort'] } : {}),
+    ...((SERVICE_TIERS as readonly string[]).includes(tier) ? { serviceTier: tier as ResponseTuning['serviceTier'] } : {}),
+  };
+}
+/** Once the API refuses the tuning with 400, later requests in this process stop sending it. */
+export const responseTuningState = { disabled: false };
 // Generation starts only while enough of the room lock remains for the picture and its upload.
 const IMAGE_BUDGET_MS = 60_000;
 
@@ -83,7 +100,7 @@ function rejectionReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: string, model: string, options: { images?: ImageGeneration } = {}) {
+export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: string, model: string, options: { images?: ImageGeneration; tuning?: ResponseTuning } = {}) {
   input = AiRequestSchema.parse(input);
   const started = Date.now();
   const controller = new AbortController();
@@ -116,15 +133,27 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
     const messages: InputMessage[] = [{ role: 'developer', content: instructions + (options.images ? imageInstructions : noImageInstructions) + (input.supportsCompositionAppends ? '' : '\nThis client cannot apply appendComposition. Do not use appendComposition for this request. If adding a Composition is necessary, ask the user to reload the page to use the updated editor, and return no operations. Existing-object and existing-timeline editing remains available.') }, ...history, { role: 'user', content }];
     const usage = { input: 0, cached: 0, output: 0 };
     let attempts = 0;
+    const request = (extra: InputMessage[], tuning: ResponseTuning | undefined) => Promise.race([client.responses.parse({
+      model, store: false, max_output_tokens: 6000,
+      input: [...messages, ...extra],
+      text: { format: zodTextFormat(EditProposalSchema, 'poietra_edit') },
+      ...(tuning?.reasoningEffort ? { reasoning: { effort: tuning.reasoningEffort } } : {}),
+      ...(tuning?.serviceTier ? { service_tier: tuning.serviceTier } : {}),
+    }, { signal: controller.signal }), deadline]);
     async function generate(extra: InputMessage[]): Promise<ProposalOutput> {
       attempts += 1;
       // The SDK's API-key retry sleep is not abortable. Race it as well as passing
       // the signal: return on time, and prevent a sleeping retry from sending later.
-      const result = await Promise.race([client.responses.parse({
-        model, store: false, max_output_tokens: 6000,
-        input: [...messages, ...extra],
-        text: { format: zodTextFormat(EditProposalSchema, 'poietra_edit') },
-      }, { signal: controller.signal }), deadline]);
+      const tuning = responseTuningState.disabled ? undefined : options.tuning;
+      let result: Awaited<ReturnType<typeof request>>;
+      try { result = await request(extra, tuning); }
+      catch (error) {
+        // A 400 with tuning means this model or account refuses the effort/tier: repeat with defaults now and skip it later.
+        if (!tuning || (!tuning.reasoningEffort && !tuning.serviceTier) || !(error instanceof OpenAI.APIError) || error.status !== 400) throw error;
+        responseTuningState.disabled = true;
+        console.warn(JSON.stringify({ event: 'ai_tuning_unsupported', tuning, message: error.message }));
+        result = await request(extra, undefined);
+      }
       usage.input += result.usage?.input_tokens ?? 0;
       usage.cached += result.usage?.input_tokens_details?.cached_tokens ?? 0;
       usage.output += result.usage?.output_tokens ?? 0;
@@ -158,14 +187,15 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
     if (requests.length) {
       if (Date.now() - started > IMAGE_BUDGET_MS) throw new Error('時間内に画像を生成できませんでした。もう一度依頼してください。');
       const assets = new Map<GenerateImageOperation, ImageAsset>();
-      for (const request of requests) {
+      // Pictures are independent: generate them at the same time instead of one after another.
+      await Promise.all(requests.map(async operation => {
         const began = Date.now();
-        assets.set(request, await generateImage(client, options.images!, request, controller.signal, deadline));
-        console.log(JSON.stringify({ event: 'ai_image_generated', ms: Date.now() - began, size: request.size, transparent: request.transparent }));
-      }
+        assets.set(operation, await generateImage(client, options.images!, operation, controller.signal, deadline));
+        console.log(JSON.stringify({ event: 'ai_image_generated', ms: Date.now() - began, size: operation.size, transparent: operation.transparent }));
+      }));
       proposal = compile(parsed, operation => assets.get(operation));
     }
-    console.log(JSON.stringify({ event: 'ai_proposal', ms: Date.now() - started, attempts, operations: parsed.operations.length, changes: proposal.changes.length, images: requests.length, usage }));
+    console.log(JSON.stringify({ event: 'ai_proposal', ms: Date.now() - started, attempts, operations: parsed.operations.length, changes: proposal.changes.length, images: requests.length, usage, tuning: responseTuningState.disabled ? null : options.tuning ?? null }));
     return proposal;
   } catch (error) {
     if (controller.signal.aborted) {
