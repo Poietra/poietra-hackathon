@@ -132,6 +132,7 @@ Composition・Transition の具体的な保存形式や、ベジェ曲線の編�
 - 配置先は Yumaboda の Cloudflare アカウントとする（2026-09-15、発案者の指定）。`wrangler.jsonc` の `account_id` をこのアカウントに固定する。
 - 参加は推測困難なルーム ID を含む共有リンクを使う。リンクを知っている人は編集できる。選択・カーソルは在室者の表示に使い、再生位置は各ブラウザで独立させる。変更はプロパティ単位で同期し、取り消しは自分の操作を対象にする。
 - Furukawa（GitHub: `furukawa1020`）に描画・数式 Write・WebCodecs 書き出しを分担する。UI・同期との並行作業を可能にするため、`src/engine/render-contract.ts` に呼び出し口を固定する。担当範囲と完了条件は GitHub Issue に記載する。
+- 描画・書き出しの統合後、Furukawa に WebGL2 の Glow とプレビュー・書き出し共通の Canvas 描画を追加分担する（2026-09-15）。既存の `effect: 'none' | 'glow'` を使い、呼び出し口は `src/engine/painter-contract.ts` に固定する。UI への組み込み・同期・AI は Hosi121 / Codex が担当する。現行の Glow は SVG フィルターであり、WebGL2 版はこの追加タスクで実装・検証する。
 
 ## 技術候補と着想
 
