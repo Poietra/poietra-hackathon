@@ -3,7 +3,9 @@ import type { Frame, RenderObject } from './evaluate';
 import type { ObjectBounds, SvgOptions } from './render-contract';
 import { GLOW_STYLE } from './effects/glow-style';
 import { EQUATION_UNITS_PER_EM, EQUATION_WRITE_STROKE_UNITS, equationMarkup, getEquation, prepareEquations } from './rendering/equations';
-import { embeddedFontStyles, FONT_FAMILY, measureText, prepareFonts } from './rendering/fonts';
+import { embeddedFontStyles, measureText, prepareFonts } from './rendering/fonts';
+import { textMarkup } from './rendering/text-markup';
+import { arrowHeadPath, arrowHeadProgress, numberlineTickPath, numberlineTickProgress, SHAPE_STYLE, shapeGeometry } from './rendering/shape-geometry';
 import { color, escapeXml, finite, number as n, safeId, unit } from './rendering/svg';
 
 let nextSvg = 0;
@@ -64,10 +66,10 @@ export function objectBounds(item: RenderObject): ObjectBounds {
   } else if (item.object.kind === 'arrow' || item.object.kind === 'numberline') {
     const angle = Math.atan2(height, width);
     const length = Math.hypot(width, height);
-    const head = Math.min(length, Math.max(10, stroke * 6));
-    const spread = item.object.kind === 'numberline' ? Math.max(6, head * 0.45) : head * 0.45;
+    const head = Math.min(length, Math.max(SHAPE_STYLE.minimumArrowHead, stroke * 2 * SHAPE_STYLE.arrowHeadStrokeWidths));
+    const spread = item.object.kind === 'numberline' ? Math.max(SHAPE_STYLE.tickHalfLength, head * SHAPE_STYLE.arrowHeadSpread) : head * SHAPE_STYLE.arrowHeadSpread;
     const points = [[0, 0], [width, height], [width - head * Math.cos(angle) + spread * Math.sin(angle), height - head * Math.sin(angle) - spread * Math.cos(angle)], [width - head * Math.cos(angle) - spread * Math.sin(angle), height - head * Math.sin(angle) + spread * Math.cos(angle)]];
-    if (item.object.kind === 'numberline') for (const t of [0, 1]) points.push([width * t + 6 * Math.sin(angle), height * t - 6 * Math.cos(angle)], [width * t - 6 * Math.sin(angle), height * t + 6 * Math.cos(angle)]);
+    if (item.object.kind === 'numberline') for (const t of [0, 1]) points.push([width * t + SHAPE_STYLE.tickHalfLength * Math.sin(angle), height * t - SHAPE_STYLE.tickHalfLength * Math.cos(angle)], [width * t - SHAPE_STYLE.tickHalfLength * Math.sin(angle), height * t + SHAPE_STYLE.tickHalfLength * Math.cos(angle)]);
     const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
     bounds = { x: x + Math.min(...xs), y: y + Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
   } else {
@@ -77,25 +79,8 @@ export function objectBounds(item: RenderObject): ObjectBounds {
   return { x: bounds.x - stroke, y: bounds.y - stroke, width: bounds.width + stroke * 2, height: bounds.height + stroke * 2 };
 }
 
-function textMarkup(item: RenderObject, prefix: string): string {
-  const s = item.state, size = Math.max(0, finite(s.fontSize)), progress = unit(item.writeProgress);
-  const lines = s.text.split('\n');
-  const metrics = measureText(s.text, size);
-  const glyphCount = Array.from(s.text.replaceAll('\n', '')).length;
-  let index = 0;
-  const body = lines.map((line, lineIndex) => {
-    const text = item.order === 'sequential' && progress < 1
-      ? Array.from(line).map(character => `<tspan opacity="${n(unit(progress * glyphCount - index++))}">${escapeXml(character)}</tspan>`).join('') : escapeXml(line);
-    return `<text x="0" y="${n((lineIndex - (lines.length - 1) / 2) * metrics.lineHeight + metrics.baseline)}" text-anchor="middle" xml:space="preserve">${text}</text>`;
-  }).join('');
-  if (item.order === 'sequential' || progress >= 1) return `<g text-rendering="geometricPrecision" font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
-  const bounds = textSize(item);
-  return `<defs><clipPath id="${prefix}-text"><rect x="${n(-bounds.width / 2)}" y="${n(-bounds.height / 2 - size * 0.2)}" width="${n(bounds.width * progress)}" height="${n(bounds.height + size * 0.4)}"/></clipPath></defs><g clip-path="url(#${prefix}-text)" text-rendering="geometricPrecision" font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
-}
-
 function shapeMarkup(item: RenderObject, prefix: string): string {
   const s = item.state, kind = item.object.kind, progress = unit(item.writeProgress);
-  const width = finite(s.width), height = finite(s.height);
   const draw = progress < 1 ? ` pathLength="1" stroke-dasharray="1" stroke-dashoffset="${n(1 - progress)}"` : '';
   if (kind === 'text') return textMarkup(item, prefix);
   if (kind === 'equation') {
@@ -104,15 +89,13 @@ function shapeMarkup(item: RenderObject, prefix: string): string {
     const scale = Math.max(0, finite(s.fontSize)) / EQUATION_UNITS_PER_EM;
     return `<g transform="scale(${n(scale)}) translate(${n(-equation.x - equation.width / 2)} ${n(-equation.y - equation.height / 2)})" fill="currentColor" stroke="none">${equationMarkup(equation, progress, item.order)}</g>`;
   }
-  if (kind === 'circle') return `<ellipse cx="0" cy="0" rx="${n(Math.abs(width) / 2)}" ry="${n(Math.abs(height) / 2)}" fill-opacity="${n(progress)}"${draw}/>`;
-  if (kind === 'rectangle') return `<rect x="${n(-Math.abs(width) / 2)}" y="${n(-Math.abs(height) / 2)}" width="${n(Math.abs(width))}" height="${n(Math.abs(height))}" rx="${n(Math.max(0, Math.min(finite(s.cornerRadius), Math.abs(width) / 2, Math.abs(height) / 2)))}" fill-opacity="${n(progress)}"${draw}/>`;
-  if (kind === 'path') return `<path d="M0 0 C${n(s.path.c1.x)} ${n(s.path.c1.y)} ${n(s.path.c2.x)} ${n(s.path.c2.y)} ${n(width)} ${n(height)}" fill="none"${draw}/>`;
-  const length = Math.hypot(width, height), angle = Math.atan2(height, width) * 180 / Math.PI;
-  const head = Math.min(length, Math.max(10, Math.max(0, finite(s.strokeWidth)) * 3));
-  const spread = head * 0.45;
-  const headOpacity = unit((progress - 0.8) * 5);
-  const ticks = kind === 'numberline' ? Array.from({ length: 11 }, (_, index) => `<path d="M${n(length * index / 10)} -6 V6" opacity="${n(unit(progress * 11 - index))}"/>`).join('') : '';
-  return `<g transform="rotate(${n(angle)})" fill="none"><path d="M0 0 H${n(length)}"${draw}/>${ticks}<path d="M${n(length - head)} ${n(-spread)} L${n(length)} 0 L${n(length - head)} ${n(spread)}" opacity="${n(headOpacity)}"/></g>`;
+  const shape = shapeGeometry(item);
+  if (!shape) return '';
+  if (shape.kind === 'circle') return `<ellipse cx="0" cy="0" rx="${n(shape.radiusX)}" ry="${n(shape.radiusY)}" fill-opacity="${n(progress)}"${draw}/>`;
+  if (shape.kind === 'rectangle') return `<rect x="${n(-shape.width / 2)}" y="${n(-shape.height / 2)}" width="${n(shape.width)}" height="${n(shape.height)}" rx="${n(shape.radius)}" fill-opacity="${n(progress)}"${draw}/>`;
+  if (shape.kind === 'path') return `<path d="${shape.path}" fill="none"${draw}/>`;
+  const ticks = shape.kind === 'numberline' ? Array.from({ length: SHAPE_STYLE.numberlineTicks }, (_, index) => `<path d="${numberlineTickPath(shape.length, index)}" opacity="${n(numberlineTickProgress(progress, index))}"/>`).join('') : '';
+  return `<g transform="rotate(${n(shape.angle)})" fill="none"><path d="M0 0 H${n(shape.length)}"${draw}/>${ticks}<path d="${arrowHeadPath(shape)}" opacity="${n(arrowHeadProgress(progress))}"/></g>`;
 }
 
 /** Produce self-contained SVG, with no authored markup, external assets, or executable content. */
