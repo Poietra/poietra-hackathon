@@ -41,13 +41,17 @@ export function getValue(doc: Y.Doc, path: string[]): unknown {
 }
 
 export function applyChanges(doc: Y.Doc, changes: Change[], origin: unknown = LOCAL_ORIGIN) {
+  // Validate every target before the transaction: Yjs transactions do not roll back on throw.
+  const resolved = changes.map(({ path, value }) => {
+    if (path.length === 0 || path.some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) throw new Error('Invalid edit path');
+    const parent = getShared(doc, path.slice(0, -1));
+    if (!(parent instanceof Y.Map)) throw new Error(`The edit target no longer exists: ${path.join('.')}`);
+    return { parent, key: path.at(-1)!, value };
+  });
   doc.transact(() => {
-    for (const { path, value } of changes) {
-      if (path.length === 0 || path.some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) throw new Error('Invalid edit path');
-      const parent = getShared(doc, path.slice(0, -1));
-      if (!(parent instanceof Y.Map)) throw new Error(`The edit target no longer exists: ${path.join('.')}`);
-      if (value === undefined) parent.delete(path.at(-1)!);
-      else parent.set(path.at(-1)!, toShared(value));
+    for (const { parent, key, value } of resolved) {
+      if (value === undefined) parent.delete(key);
+      else parent.set(key, toShared(value));
     }
   }, origin);
 }
