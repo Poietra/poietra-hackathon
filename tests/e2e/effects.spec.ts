@@ -114,6 +114,28 @@ test('actual WebGL context loss switches to Canvas 2D for later frames', async (
   await saveReport(testInfo, 'context-loss', report);
 });
 
+test('raster image Glow and Write retain colors and transparency after context loss', async ({ page }, testInfo) => {
+  const report = await page.evaluate(() => window.effectsFixture.imageGlow());
+  await saveReport(testInfo, 'image-glow-context-loss', report);
+  expect(report.before).toBe('webgl2'); expect(report.after).toBe('canvas2d');
+  for (const sample of [report.unlit, report.fallbackUnlit]) {
+    expect(sample.red).toEqual([255, 0, 0, 255]);
+    expect(sample.green).toEqual([0, 255, 0, 255]);
+    expect(sample.hole).toEqual([...BACKGROUND_RGB, 255]);
+  }
+  for (const sample of [report.writing, report.fallbackWriting]) {
+    expect(sample.red).toEqual([255, 0, 0, 255]);
+    expect(sample.green).toEqual([...BACKGROUND_RGB, 255]);
+  }
+  expect(report.ring.lit.meanEnergy).toBeGreaterThan(report.ring.unlit.meanEnergy + TOLERANCE.minimumGlowEnergy);
+  expect(report.ring.fallback.meanEnergy).toBeGreaterThan(report.ring.unlit.meanEnergy + TOLERANCE.minimumGlowEnergy);
+  expect(report.unlitDifference.meanAbsoluteError).toBe(0);
+  expect(report.litDifference.meanAbsoluteError).toBeLessThan(TOLERANCE.alphaChannelError);
+  expect(report.writeDifference.meanAbsoluteError).toBeLessThan(TOLERANCE.alphaChannelError);
+  expect(report.released.liveGpuResources).toBe(report.baseline.liveGpuResources);
+  expect(report.released.liveObjectUrls).toBe(report.baseline.liveObjectUrls);
+});
+
 test('cancellation and dispose release resources without breaking a new painter', async ({ page }, testInfo) => {
   const report = await page.evaluate(() => window.effectsFixture.lifecycle());
   expect(report.preAborted).toBe('AbortError');

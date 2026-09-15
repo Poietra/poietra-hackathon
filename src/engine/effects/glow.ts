@@ -63,14 +63,6 @@ function resizeTargets(gl: WebGL2RenderingContext, resources: GlowResources, wid
   for (const texture of [resources.sourceTexture, resources.horizontal.texture, resources.vertical.texture]) {
     resizeTexture(gl, texture, width, height);
   }
-  for (const target of [resources.horizontal, resources.vertical]) {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-      throw new Error('Glow framebuffer is incomplete.');
-    }
-  }
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  checkGraphicsError(gl);
 }
 
 function blur(gl: WebGL2RenderingContext, resources: GlowResources, width: number, height: number, sigma: number) {
@@ -175,13 +167,14 @@ export function createGlowRenderer(): GlowRenderer | null {
         throw new Error('The Glow blur radius is invalid or exceeds WebGL texture limits.');
       }
       if (width !== textureWidth || height !== textureHeight) {
+        // A failed resize can leave only some textures at the requested extent.
+        textureWidth = 0;
+        textureHeight = 0;
         resizeDrawingBuffer(canvas, width, height);
         if (context.drawingBufferWidth !== width || context.drawingBufferHeight !== height) {
           throw new Error('WebGL cannot allocate the requested Glow output size.');
         }
         resizeTargets(context, gpu, width, height);
-        textureWidth = width;
-        textureHeight = height;
       }
       context.viewport(0, 0, width, height);
       context.activeTexture(context.TEXTURE0);
@@ -193,8 +186,11 @@ export function createGlowRenderer(): GlowRenderer | null {
       if (sigmaPixels > 0) blur(context, gpu, width, height, sigmaPixels);
       composite(context, gpu, sigmaPixels > 0);
       context.flush();
-      // One final check covers upload and drawing errors before the caller can copy pixels.
+      // Draws against incomplete framebuffers raise INVALID_FRAMEBUFFER_OPERATION.
+      // Check allocation, upload and drawing together before any pixels are copied.
       checkGraphicsError(context);
+      textureWidth = width;
+      textureHeight = height;
     }
     return { canvas, get lost() { return isLost(); }, render, dispose };
   } catch {

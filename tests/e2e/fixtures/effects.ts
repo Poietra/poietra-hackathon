@@ -1,5 +1,5 @@
 import { ALL_FORMATS, BlobSource, EncodedPacketSink, Input, VideoSampleSink } from 'mediabunny';
-import { defaultState, sceneDuration } from '../../../shared/model';
+import { defaultState, sceneDuration, type Scene } from '../../../shared/model';
 import { evaluateScene, type Frame } from '../../../src/engine/evaluate';
 import { exportScene, getExportCapabilities } from '../../../src/engine/export';
 import { loadKernel } from '../../../src/engine/kernel';
@@ -144,6 +144,54 @@ async function exportVideo(format: 'mp4' | 'webm') {
 
 const fixture = {
   times,
+  async imageGlow() {
+    stop(); await queue;
+    const baseline = probe.snapshot();
+    // Opaque colors surround a transparent hole; half Write must hide the green
+    // side without turning the image bounds into an opaque glowing rectangle.
+    const source = canvas(80, 40), target = canvas(320, 180);
+    const sourceContext = source.getContext('2d')!;
+    sourceContext.fillStyle = '#ff0000'; sourceContext.fillRect(0, 0, 40, 40);
+    sourceContext.fillStyle = '#00ff00'; sourceContext.fillRect(40, 0, 40, 40);
+    sourceContext.clearRect(32, 12, 16, 16);
+    const imageScene: Scene = {
+      id: 'image-glow', name: 'Image Glow', width: target.width, height: target.height, background: '#08090b',
+      objects: { image: { id: 'image', name: 'Transparent image', kind: 'image', order: 0, groupId: null, locked: false,
+        image: { src: source.toDataURL('image/png'), width: source.width, height: source.height } } },
+      compositionOrder: ['still'], compositions: { still: { id: 'still', name: 'Still', duration: DISPLAY.millisecondsPerSecond, accent: '#ffffff', states: {
+        image: defaultState('image', { x: target.width / 2, y: target.height / 2, width: source.width * 2, height: source.height * 2, cornerRadius: 0, strokeWidth: 0 }),
+      } } }, transitions: {},
+    };
+    let instance: Awaited<ReturnType<typeof createFramePainter>> | undefined;
+    try {
+      await prepareScene(imageScene);
+      const contextIndex = probe.contexts.length;
+      const painter = await createFramePainter(target);
+      instance = painter;
+      const render = async (progress: number, effect: 'none' | 'glow') => {
+        const frame = evaluateScene(imageScene, 0, kernel);
+        frame.objects[0].writeProgress = progress; frame.objects[0].state.effect = effect;
+        await painter.render(frame);
+        return pixels(target);
+      };
+      const before = painter.backend;
+      const unlit = await render(1, 'none'), lit = await render(1, 'glow'), writing = await render(0.5, 'glow');
+      await probe.loseContext(contextIndex);
+      const fallbackWriting = await render(0.5, 'glow'), fallbackLit = await render(1, 'glow'), fallbackUnlit = await render(1, 'none');
+      const imageState = imageScene.compositions.still.states.image;
+      const ring = { x: imageState.x + imageState.width / 2 + HALO_SAMPLE.outsideOffset, y: imageState.y - HALO_SAMPLE.height / 2, width: HALO_SAMPLE.width, height: HALO_SAMPLE.height };
+      const samples = (image: ImageData) => ({
+        red: pixel(image, imageState.x - imageState.width * 3 / 8, imageState.y - imageState.height / 4),
+        green: pixel(image, imageState.x + imageState.width * 3 / 8, imageState.y - imageState.height / 4),
+        hole: pixel(image, imageState.x, imageState.y),
+      });
+      const report = { before, after: painter.backend, unlit: samples(unlit), fallbackUnlit: samples(fallbackUnlit), writing: samples(writing), fallbackWriting: samples(fallbackWriting),
+        ring: { unlit: region(unlit, ring), lit: region(lit, ring), fallback: region(fallbackLit, ring) },
+        unlitDifference: difference(unlit, fallbackUnlit), litDifference: difference(lit, fallbackLit), writeDifference: difference(writing, fallbackWriting) };
+      painter.dispose();
+      return { ...report, baseline, released: probe.snapshot() };
+    } finally { instance?.dispose(); source.width = source.height = 0; target.width = target.height = 0; }
+  },
   async smallText() {
     stop();
     const reports = [];
