@@ -33,10 +33,11 @@ setTransitionDuration changes an existing Transition's duration in milliseconds 
 Image objects contain an uploaded raster asset shared across their compositions. You may change their position, dimensions, rotation, opacity, visibility, corner radius, border or effect, and animate them with Move/Fade/Grow/Write. Write reveals an image left-to-right. Preserve aspect ratio when resizing unless stretching is explicitly requested. Never change image fill, text or fontSize, which cannot alter bitmap pixels. Creating/replacing image assets and editing their pixels are unavailable; ask the user to use Add image for uploads. For TeX use standard base and ams commands. Do not generate source code or whole videos.
 Mention the concrete changes briefly. If a request cannot be expressed with these operations, explain and return no operations.`;
 
-// One Responses call, retried once by the SDK on transient failures, then at most one
-// validation repair: the whole request stays inside the room's AI lock.
+// The shared deadline includes both generations, SDK retries and Retry-After waits,
+// and expires before the room's 180 s AI lock.
 const CALL_TIMEOUT_MS = 60_000;
 const REPAIR_BUDGET_MS = 50_000;
+const REQUEST_TIMEOUT_MS = 170_000;
 type ProposalOutput = z.infer<typeof EditProposalSchema>;
 type InputMessage = { role: 'developer' | 'user' | 'assistant'; content: string };
 
@@ -49,6 +50,12 @@ function rejectionReason(error: unknown): string {
 export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: string, model: string) {
   input = AiRequestSchema.parse(input);
   const started = Date.now();
+  const controller = new AbortController();
+  const timeoutError = new Error('AI の処理が時間内に完了しませんでした。依頼を小さく分けてお試しください。');
+  let deadlineTimer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => {
+    deadlineTimer = setTimeout(() => { controller.abort(); reject(timeoutError); }, REQUEST_TIMEOUT_MS);
+  });
   // Keep preconditions from the instant the request starts, even if people edit while AI runs.
   const snapshot = new Y.Doc();
   Y.applyUpdate(snapshot, Y.encodeStateAsUpdate(doc));
@@ -75,11 +82,13 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
     let attempts = 0;
     async function generate(extra: InputMessage[]): Promise<ProposalOutput> {
       attempts += 1;
-      const result = await client.responses.parse({
+      // The SDK's API-key retry sleep is not abortable. Race it as well as passing
+      // the signal: return on time, and prevent a sleeping retry from sending later.
+      const result = await Promise.race([client.responses.parse({
         model, store: false, max_output_tokens: 6000,
         input: [...messages, ...extra],
         text: { format: zodTextFormat(EditProposalSchema, 'poietra_edit') },
-      });
+      }, { signal: controller.signal }), deadline]);
       usage.input += result.usage?.input_tokens ?? 0;
       usage.cached += result.usage?.input_tokens_details?.cached_tokens ?? 0;
       usage.output += result.usage?.output_tokens ?? 0;
@@ -108,7 +117,13 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
     }
     console.log(JSON.stringify({ event: 'ai_proposal', ms: Date.now() - started, attempts, operations: parsed.operations.length, changes: proposal.changes.length, usage }));
     return proposal;
-  } finally { snapshot.destroy(); }
+  } catch (error) {
+    if (controller.signal.aborted) {
+      console.warn(JSON.stringify({ event: 'ai_request_timeout', ms: Date.now() - started }));
+      throw timeoutError;
+    }
+    throw error;
+  } finally { clearTimeout(deadlineTimer!); snapshot.destroy(); }
 }
 
 export function aiErrorMessage(error: unknown): string {
