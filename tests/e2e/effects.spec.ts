@@ -97,6 +97,16 @@ test('Canvas 2D fallback remains usable when WebGL2 is unavailable', async ({ pa
   await saveReport(testInfo, 'canvas-fallback-video', video);
 });
 
+test('small preview text retains its edge glyphs after object rasterization', async ({ page }, testInfo) => {
+  const report = await page.evaluate(() => window.effectsFixture.smallText());
+  for (const sample of report) {
+    expect(sample.referenceEnergy).toBeGreaterThan(1000);
+    // Resampling can round channel values; cropping whole edge glyphs loses much more ink.
+    expect(sample.actualEnergy / sample.referenceEnergy).toBeGreaterThan(0.98);
+  }
+  await saveReport(testInfo, 'small-text-crops', report);
+});
+
 test('actual WebGL context loss switches to Canvas 2D for later frames', async ({ page }, testInfo) => {
   const report = await page.evaluate(() => window.effectsFixture.contextLoss());
   expect(report.before).toBe('webgl2'); expect(report.after).toBe('canvas2d');

@@ -1,0 +1,16 @@
+.export-dialog .export-dialog-settings{margin:0;padding:0;border:0;display:flex;flex-direction:column;gap:16px;min-width:0}
+.export-dialog .export-dialog-settings>label{display:flex;justify-content:space-between;align-items:center;gap:16px;font-size:12px;color:#aaaabb}
+.export-dialog .export-dialog-settings select{width:225px;max-width:65%;border:1px solid #3e3e4e;background:#25252f;color:#d1d0df;border-radius:6px;padding:8px 10px;font:inherit}
+.export-dialog .export-dialog-settings:disabled select{opacity:.65}
+.export-dialog .export-dialog-note{color:#9594a9;font-size:11px;line-height:1.8;margin-top:13px}
+.export-dialog .export-dialog-status:empty{display:none}
+.export-dialog .export-dialog-status{margin-top:22px;font-size:12px;color:#afadc1}
+.export-dialog .export-dialog-status p{display:flex;align-items:center;gap:8px;line-height:1.8}
+.export-dialog .export-dialog-progress{display:flex;align-items:center;gap:12px;margin-top:12px;font-variant-numeric:tabular-nums}
+.export-dialog .export-dialog-progress progress{flex:1;min-width:0;height:5px;accent-color:#9e8ddd}
+.export-dialog .export-dialog-result{padding:14px 16px;border:1px solid #41434f;border-radius:8px;background:#24242f;display:flex;flex-direction:column;gap:7px}
+.export-dialog .export-dialog-result p{color:#b6d6c0}
+.export-dialog .export-dialog-result span{font-variant-numeric:tabular-nums;font-size:11px;color:#adadbf}
+.export-dialog .export-dialog-result small{overflow-wrap:anywhere;color:#88879c;font-size:10px}
+.export-dialog .export-dialog-actions{flex-wrap:wrap}
+@media(max-width:520px){.export-dialog .export-dialog-actions .primary-button{flex:1}.export-dialog .export-dialog-settings select{width:200px}}

@@ -20,6 +20,8 @@ export interface EditorSnapshot {
   project: Project | null;
   status: 'connecting' | 'connected' | 'disconnected';
   synced: boolean;
+  localPersistence: 'loading' | 'ready' | 'unavailable';
+  connectionIssue: string | null;
   peers: Peer[];
   canUndo: boolean;
   canRedo: boolean;
@@ -43,7 +45,10 @@ export class EditorStore {
   readonly persistence: IndexeddbPersistence;
   readonly undoManager: Y.UndoManager;
   private listeners = new Set<() => void>();
-  private state: EditorSnapshot = { project: null, status: 'connecting', synced: false, peers: [], canUndo: false, canRedo: false };
+  private state: EditorSnapshot = { project: null, status: 'connecting', synced: false, localPersistence: 'loading', connectionIssue: null, peers: [], canUndo: false, canRedo: false };
+  private connectionWait: ReturnType<typeof setTimeout> | null = null;
+  private localWait: ReturnType<typeof setTimeout> | null = null;
+  private localFailed = false;
   readonly color = COLORS[this.doc.clientID % COLORS.length];
   userName = localStorage.getItem('poietra-user-name') || `Guest ${String(this.doc.clientID).slice(-3)}`;
 
@@ -55,14 +60,74 @@ export class EditorStore {
     this.provider.awareness.setLocalStateField('user', { name: this.userName, color: this.color });
     this.provider.on('status', ({ status }: { status: EditorSnapshot['status'] }) => {
       if (status === 'connected') this.provider.awareness.setLocalState(this.provider.awareness.getLocalState());
-      this.refresh({ status });
+      this.refresh({ status, ...(status !== 'connected' ? { synced: false } : {}) });
+      this.watchConnection();
     });
-    this.provider.on('sync', (synced: boolean) => this.refresh({ synced }));
-    this.doc.on('update', () => this.refresh({ project: readProject(this.doc) }));
+    this.provider.on('sync', (synced: boolean) => { this.refresh({ synced }); this.watchConnection(); });
+    this.provider.on('connection-close', () => this.refresh({ status: 'disconnected', synced: false, connectionIssue: 'サーバーとの接続が切れました。自動で再接続を試みています。' }));
+    this.provider.on('connection-error', () => this.refresh({ connectionIssue: 'サーバーに接続できません。ネットワークを確認して再接続してください。' }));
+    this.provider.on('closed', () => this.refresh({ status: 'disconnected', synced: false, connectionIssue: 'サーバーが接続を終了しました。再接続してください。続く場合は共有リンクを確認してください。' }));
+    this.doc.on('update', () => { this.refresh({ project: readProject(this.doc) }); this.watchConnection(); });
     this.provider.awareness.on('change', () => this.refresh());
     for (const event of ['stack-item-added', 'stack-item-popped', 'stack-cleared', 'stack-item-updated'] as const) this.undoManager.on(event, () => this.refresh());
-    this.persistence.on('synced', () => this.refresh({ project: readProject(this.doc) }));
+    this.localWait = setTimeout(() => this.refresh({ localPersistence: 'unavailable' }), 8000);
+    const localFailure = () => {
+      this.localFailed = true;
+      if (this.localWait) clearTimeout(this.localWait);
+      this.refresh({ localPersistence: 'unavailable' });
+    };
+    void this.persistence._db.then(db => {
+      db.addEventListener('error', localFailure);
+      db.addEventListener('abort', localFailure);
+      db.addEventListener('close', localFailure);
+    }).catch(localFailure);
+    this.persistence.on('synced', () => {
+      this.refresh({ project: readProject(this.doc) });
+      // `synced` means reads were applied; the initial write may still be pending.
+      // A following transaction completes only after those queued writes commit.
+      try {
+        const transaction = this.persistence.db!.transaction('updates', 'readonly');
+        transaction.oncomplete = () => {
+          if (this.localFailed) return;
+          if (this.localWait) clearTimeout(this.localWait);
+          this.refresh({ localPersistence: 'ready' });
+        };
+        transaction.onabort = localFailure;
+        transaction.onerror = localFailure;
+      } catch { localFailure(); }
+    });
+    this.watchConnection();
+    this.doc.on('destroy', () => {
+      if (this.connectionWait) clearTimeout(this.connectionWait);
+      if (this.localWait) clearTimeout(this.localWait);
+    });
   }
+
+  private watchConnection() {
+    if (this.state.status === 'connected' && this.state.synced && this.state.project) {
+      if (this.connectionWait) clearTimeout(this.connectionWait);
+      this.connectionWait = null;
+      if (this.state.connectionIssue) this.refresh({ connectionIssue: null });
+    } else if (!this.connectionWait) {
+      // Keep one deadline across automatic attempts; repeated connecting events
+      // must not leave a new room displaying a spinner indefinitely.
+      this.connectionWait = setTimeout(() => {
+        this.connectionWait = null;
+        this.refresh({ connectionIssue: this.state.status === 'connected' ? 'サーバーに接続しましたが、同期が完了していません。再接続してください。' : '接続に時間がかかっています。ネットワークを確認して再接続してください。' });
+      }, 8000);
+    }
+  }
+
+  retryConnection = () => {
+    if (this.connectionWait) clearTimeout(this.connectionWait);
+    this.connectionWait = null;
+    // connect() alone does nothing for an open socket stuck before initial sync.
+    // Reuse this document and UndoManager so unsent edits and undo history survive.
+    this.provider.disconnect();
+    this.refresh({ status: 'connecting', synced: false, connectionIssue: null });
+    this.provider.connect();
+    this.watchConnection();
+  };
 
   private refresh(patch: Partial<EditorSnapshot> = {}) {
     const peers = [...this.provider.awareness.getStates()].flatMap(([clientId, data]) => data.user ? [{ clientId, ...data.user, ...data.editor } as Peer] : []);
@@ -120,7 +185,10 @@ export class EditorStore {
 
   addScene() {
     const project = this.project(); const id = newId('scene');
+    if (project.sceneOrder.length >= 100) throw new Error('Scene は 100 件まで追加できます。');
     this.doc.transact(() => {
+      const survivor = getShared(this.doc, ['scenes', project.sceneOrder[0]]);
+      if (survivor instanceof Y.Map && survivor.get('deleted') === true) survivor.set('deleted', false);
       this.edit([{ path: ['scenes', id], value: makeBlankScene(id, `Scene ${project.sceneOrder.length + 1}`) }]);
       (getShared(this.doc, ['sceneOrder']) as Y.Array<string>).push([id]);
     }, LOCAL_ORIGIN);

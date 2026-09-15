@@ -58,6 +58,9 @@ export function measureText(text: string, size: number): TextMetrics {
     return { width, height: size + (lines.length - 1) * lineHeight, lineHeight, baseline: size * 0.3 };
   }
   context.font = `400 ${size}px ${FONT_FAMILY}`;
+  // Keep glyph advances proportional when a painter rasterizes text below Scene size.
+  // Integer hinting at small sizes otherwise makes the bitmap wider than these bounds.
+  context.textRendering = 'geometricPrecision';
   const measurements = lines.map(line => context!.measureText(line));
   const ascent = Math.max(size * 0.8, ...measurements.map(metrics => metrics.actualBoundingBoxAscent));
   const descent = Math.max(size * 0.2, ...measurements.map(metrics => metrics.actualBoundingBoxDescent));

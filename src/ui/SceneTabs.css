@@ -1,0 +1,14 @@
+.scene-management{display:flex;align-items:center;gap:6px;min-width:0;max-width:55%}
+.scene-management>.icon-button{width:24px}
+.scene-management .scene-tab-item{display:flex;align-items:center;flex-shrink:0;background:#22222e;border-radius:3px}
+.scene-management .scene-tab-item[data-selected]{background:#2a2936}
+.scene-management .scene-tab{min-width:0;padding-right:5px}
+.scene-management .scene-tab-name{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scene-management .scene-tab-menu{display:grid;place-items:center;width:24px;height:25px;flex-shrink:0;color:var(--muted);border-radius:3px;opacity:0}
+.scene-management .scene-tab-item:hover .scene-tab-menu,.scene-management .scene-tab-item[data-selected] .scene-tab-menu,.scene-management .scene-tab-menu:focus-visible,.scene-management .scene-tab-menu[data-popup-open]{opacity:1}
+.scene-management .scene-tab-menu:hover{background:var(--color-field);color:#d8d6e3}
+.scene-rename-form{display:flex;flex-direction:column;gap:18px}
+.scene-rename-form label{display:flex;flex-direction:column;gap:8px;font-size:12px}
+.scene-rename-form input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:var(--color-field)}
+.scene-rename-form>div{display:flex;justify-content:flex-end;gap:8px}
+.scene-rename-form>p{font-size:12px;color:#ef8078}

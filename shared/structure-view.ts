@@ -36,5 +36,13 @@ export function sceneStructureView(scene: Scene): Scene {
 
 /** Internal tombstones remain in Y.Doc; saved JSON and all consumers see this view. */
 export function projectStructureView(project: Project): Project {
-  return { ...project, scenes: Object.fromEntries(Object.entries(project.scenes).map(([id, scene]) => [id, sceneStructureView(scene)])) };
+  const ordered = [...new Set(project.sceneOrder)].filter(id => !!project.scenes[id]);
+  const visible = ordered.filter(id => !project.scenes[id].deleted);
+  // Offline clients may each remove the other's remaining Scene. Retain one
+  // shared survivor without introducing a repair transaction or copying its data.
+  if (!visible.length && ordered.length) visible.push(ordered[0]);
+  return { ...project, sceneOrder: visible, scenes: Object.fromEntries(visible.map(id => {
+    const { deleted: _deleted, ...scene } = project.scenes[id];
+    return [id, sceneStructureView(scene)];
+  })) };
 }

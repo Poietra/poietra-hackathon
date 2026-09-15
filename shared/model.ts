@@ -70,6 +70,8 @@ export interface Scene {
   compositionOrder: string[];
   compositions: Record<string, Composition>;
   transitions: Record<string, Transition>;
+  /** Internal CRDT tombstone; readProject omits it from the editable/saved view. */
+  deleted?: boolean;
 }
 
 export interface Project {
