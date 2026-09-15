@@ -4,9 +4,12 @@ import { getShared, LOCAL_ORIGIN } from '../../shared/document';
 export class EditorUndoManager extends Y.UndoManager {
   readonly peerEditedTracks = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedObjects = new WeakSet<Y.Map<unknown>>();
+  readonly peerEditedCompositions = new WeakSet<Y.Map<unknown>>();
+  readonly peerEditedTransitions = new WeakSet<Y.Map<unknown>>();
   readonly retainedCreationTracks = new WeakSet<Y.Map<unknown>>();
   lastUndoPreservedObjects = 0;
   lastUndoPreservedDurations = 0;
+  lastUndoPreservedCompositions = 0;
   private readonly root: Y.Map<unknown>;
   private readonly rememberPeerEdits = (events: Y.YEvent<Y.AbstractType<unknown>>[], transaction: Y.Transaction) => {
     if (transaction.local) return;
@@ -18,6 +21,11 @@ export class EditorUndoManager extends Y.UndoManager {
         if (object instanceof Y.Map) this.peerEditedObjects.add(object);
       };
       const changedKeys = event instanceof Y.YMapEvent ? [...event.keysChanged] : [];
+      const parents = path[2] === 'compositions' ? this.peerEditedCompositions : path[2] === 'transitions' ? this.peerEditedTransitions : null;
+      if (parents) for (const id of path.length === 3 ? changedKeys : [path[3]]) {
+        const parent = getShared(this.doc, ['scenes', path[1], path[2], id]);
+        if (parent instanceof Y.Map) parents.add(parent);
+      }
       if (path[2] === 'objects') {
         for (const id of path.length === 3 ? changedKeys : [path[3]]) rememberObject(id);
         continue;
@@ -58,6 +66,9 @@ function sharedCreations(manager: EditorUndoManager) {
   const protectedTracks = new Set<Y.Map<unknown>>();
   const protectedObjects = new Set<Y.Map<unknown>>();
   const dependentTracks = new Set<Y.Map<unknown>>();
+  const protectedCompositions = new Set<Y.Map<unknown>>();
+  const revivedCompositions = new Set<Y.Map<unknown>>();
+  const orderEntries = new Map<Y.Array<unknown>, Set<string>>();
   const roots = new Set<Y.Map<unknown>>();
   const scenes = manager.doc.getMap('project').get('scenes');
   if (action && scenes instanceof Y.Map) for (const scene of scenes.values()) {
@@ -68,8 +79,9 @@ function sharedCreations(manager: EditorUndoManager) {
     const objects = scene.get('objects');
     const compositions = scene.get('compositions');
     const transitions = scene.get('transitions');
-    if (objects instanceof Y.Map && !added(objects)) for (const [id, object] of objects) {
-      if (!(object instanceof Y.Map) || !added(object) || !manager.peerEditedObjects.has(object)) continue;
+    function protectObject(id: string) {
+      const object = objects instanceof Y.Map && !added(objects) ? objects.get(id) : null;
+      if (!(object instanceof Y.Map) || !added(object)) return;
       protectedObjects.add(object); roots.add(object);
       // The identity, every Composition state and every animation form one
       // creation. Retaining only the peer-edited leaf would leave orphan tracks
@@ -85,18 +97,71 @@ function sharedCreations(manager: EditorUndoManager) {
         }
       }
     }
+    if (objects instanceof Y.Map && !added(objects)) for (const [id, object] of objects) {
+      if (object instanceof Y.Map && manager.peerEditedObjects.has(object)) protectObject(id);
+    }
     if (!(transitions instanceof Y.Map)) continue;
     for (const transition of transitions.values()) {
       const tracks = transition instanceof Y.Map ? transition.get('tracks') : null;
-      // Limit this rule to tracks added to an existing transition. In particular,
-      // keep Scene/Composition creation and their Undo semantics unchanged.
+      // Existing transitions retain individual peer-edited new tracks. New
+      // transitions are handled with their Composition creation batch below.
       if (!(tracks instanceof Y.Map) || !tracks._item || Y.isDeleted(action.insertions, tracks._item.id)) continue;
       for (const track of tracks.values()) {
         if (track instanceof Y.Map && added(track) && manager.peerEditedTracks.has(track)) { protectedTracks.add(track); dependentTracks.add(track); roots.add(track); }
       }
     }
+    const order = scene.get('compositionOrder');
+    // A whole new Scene remains outside this rule. Within an existing Scene,
+    // all Compositions inserted by one action form the atomic append batch.
+    if (!(compositions instanceof Y.Map) || added(compositions) || !(order instanceof Y.Array)) continue;
+    const created = new Map<string, Y.Map<unknown>>();
+    for (const [id, composition] of compositions) if (composition instanceof Y.Map && added(composition)) created.set(id, composition);
+    if (!created.size) continue;
+    const batchTransitions = new Set<Y.Map<unknown>>();
+    let retain = [...created.values()].some(composition => manager.peerEditedCompositions.has(composition));
+    for (const composition of created.values()) {
+      const states = composition.get('states');
+      if (states instanceof Y.Map && [...states.values()].some(state => state instanceof Y.Map && roots.has(state))) retain = true;
+    }
+    for (const transition of transitions.values()) if (transition instanceof Y.Map) {
+      if (added(transition)) {
+        if (created.has(String(transition.get('fromId'))) || created.has(String(transition.get('toId')))) {
+          batchTransitions.add(transition);
+          if (manager.peerEditedTransitions.has(transition)) retain = true;
+        }
+      } else {
+        // A later peer append depends on our new endpoint. A reference changed
+        // only by this local action (e.g. Duplicate) will Undo and is not a peer
+        // dependency, so inspect the values that would remain afterwards.
+        const from = fieldAfterUndo(manager, action, transition, 'fromId');
+        const to = fieldAfterUndo(manager, action, transition, 'toId');
+        if (created.has(String(from)) || created.has(String(to))) retain = true;
+      }
+    }
+    if (!retain) continue;
+    orderEntries.set(order, new Set(created.keys()));
+    for (const [id, composition] of created) {
+      protectedCompositions.add(composition); roots.add(composition);
+      const states = composition.get('states');
+      if (states instanceof Y.Map) for (const objectId of states.keys()) protectObject(objectId);
+    }
+    for (const transition of batchTransitions) {
+      roots.add(transition);
+      const tracks = transition.get('tracks');
+      if (tracks instanceof Y.Map) for (const [objectId, track] of tracks) {
+        protectObject(objectId);
+        if (track instanceof Y.Map) {
+          roots.add(track); dependentTracks.add(track);
+          if (added(track)) protectedTracks.add(track);
+        }
+      }
+      // An append can revive the deterministic last survivor. Keep that source
+      // visible when its new incoming/outgoing animation is retained, too.
+      const source = compositions.get(String(transition.get('fromId')));
+      if (source instanceof Y.Map && !added(source) && source.get('deleted') !== true && fieldAfterUndo(manager, action, source, 'deleted') === true) revivedCompositions.add(source);
+    }
   }
-  return { roots, dependentTracks, tracks: protectedTracks.size, objects: protectedObjects.size };
+  return { roots, dependentTracks, orderEntries, revivedCompositions, compositions: protectedCompositions.size, tracks: protectedTracks.size, objects: protectedObjects.size };
 }
 
 type UndoAction = EditorUndoManager['undoStack'][number];
@@ -183,18 +248,27 @@ function assertRestoredTracksFit(manager: EditorUndoManager, action: UndoAction,
   }
 }
 
-function protectedStep(manager: EditorUndoManager, direction: 'undo' | 'redo', roots: Set<Y.Map<unknown>>, durations: Set<Y.Map<unknown>>) {
+function protectedStep(manager: EditorUndoManager, direction: 'undo' | 'redo', creations: ReturnType<typeof sharedCreations>, durations: Set<Y.Map<unknown>>) {
   const stack = direction === 'undo' ? manager.undoStack : manager.redoStack;
   const action = stack.at(-1)!, previousDeletions = action.deletions;
-  if (durations.size) action.deletions = withoutItems(previousDeletions, [...durations].flatMap(transition => fieldHistory(transition, 'duration')));
+  const omitted = [...durations].flatMap(transition => fieldHistory(transition, 'duration'));
+  omitted.push(...[...creations.revivedCompositions].flatMap(composition => fieldHistory(composition, 'deleted')));
+  if (omitted.length) action.deletions = withoutItems(previousDeletions, omitted);
   const priorFilter = manager.deleteFilter;
   manager.deleteFilter = item => {
     if (item.parentSub === 'duration' && item.parent instanceof Y.Map && durations.has(item.parent)) return false;
+    if (item.parentSub === 'deleted' && item.parent instanceof Y.Map && creations.revivedCompositions.has(item.parent)) return false;
+    if (item.parent instanceof Y.Array) {
+      const entries = creations.orderEntries.get(item.parent);
+      // One append can insert up to four IDs in a single Yjs Item. Retain that
+      // entire creation batch rather than leave dangling partial array entries.
+      if (entries && item.content.getContent().some(id => typeof id === 'string' && entries.has(id))) return false;
+    }
     // Yjs visits children before their parent. Preserve complete subtrees,
     // including nested Bézier fields, so retained creations remain valid data.
     let type = item.content instanceof Y.ContentType ? item.content.type : item.parent;
     while (type instanceof Y.AbstractType) {
-      if (type instanceof Y.Map && roots.has(type)) return false;
+      if (type instanceof Y.Map && creations.roots.has(type)) return false;
       type = type._item?.parent ?? null;
     }
     return priorFilter(item);
@@ -215,14 +289,16 @@ function protectedStep(manager: EditorUndoManager, direction: 'undo' | 'redo', r
 export function undoPreservingPeerTracks(manager: EditorUndoManager): number {
   manager.lastUndoPreservedObjects = 0;
   manager.lastUndoPreservedDurations = 0;
+  manager.lastUndoPreservedCompositions = 0;
   while (manager.canUndo()) {
     const protectedCreations = sharedCreations(manager);
     const durations = requiredDurations(manager, protectedCreations, manager.undoStack.at(-1)!);
-    const result = protectedStep(manager, 'undo', protectedCreations.roots, durations);
+    const result = protectedStep(manager, 'undo', protectedCreations, durations);
     if (protectedCreations.roots.size || durations.size) {
       for (const track of protectedCreations.dependentTracks) manager.retainedCreationTracks.add(track);
       manager.lastUndoPreservedObjects = protectedCreations.objects;
       manager.lastUndoPreservedDurations = durations.size;
+      manager.lastUndoPreservedCompositions = protectedCreations.compositions;
       manager.stopCapturing(); return protectedCreations.tracks;
     }
     if (result) return 0;
@@ -233,12 +309,12 @@ export function undoPreservingPeerTracks(manager: EditorUndoManager): number {
 
 /** Redo normally unless a shorter duration would truncate a peer's animation. */
 export function redoPreservingPeerDurations(manager: EditorUndoManager): number {
-  const creations = { roots: new Set<Y.Map<unknown>>(), dependentTracks: new Set<Y.Map<unknown>>(), objects: 0, tracks: 0 };
+  const creations = { roots: new Set<Y.Map<unknown>>(), dependentTracks: new Set<Y.Map<unknown>>(), orderEntries: new Map<Y.Array<unknown>, Set<string>>(), revivedCompositions: new Set<Y.Map<unknown>>(), objects: 0, tracks: 0, compositions: 0 };
   while (manager.canRedo()) {
     const action = manager.redoStack.at(-1)!;
     const durations = requiredDurations(manager, creations, action);
     assertRestoredTracksFit(manager, action, durations);
-    const result = protectedStep(manager, 'redo', creations.roots, durations);
+    const result = protectedStep(manager, 'redo', creations, durations);
     if (durations.size) { manager.stopCapturing(); return durations.size; }
     if (result) return 0;
   }

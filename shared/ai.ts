@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { getShared, getValue, readProject, type Change } from './document';
-import { defaultState, defaultTrack, newId, type AnimationTrack, type ObjectKind, type ObjectState, type Project, type SceneObject } from './model';
+import { getShared, getValue, LOCAL_ORIGIN, readProject, toShared, type Change } from './document';
+import { defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type SceneObject } from './model';
 import * as Y from 'yjs';
 
 const pathCoordinate = z.number().finite().min(-10000).max(10000);
@@ -11,6 +11,7 @@ const bezierPath = z.object({
 
 const stateProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'fill', 'stroke', 'strokeWidth', 'text', 'fontSize', 'cornerRadius', 'effect'] as const;
 const objectFields = { compositionId: z.string(), name: z.string(), x: z.number(), y: z.number(), width: z.number(), height: z.number(), fill: z.string(), text: z.string(), fontSize: z.number() };
+const localReference = z.string().regex(/^@[a-zA-Z][a-zA-Z0-9_-]{0,62}$/);
 export const EditProposalSchema = z.object({
   message: z.string().max(3000),
   operations: z.array(z.discriminatedUnion('action', [
@@ -21,14 +22,16 @@ export const EditProposalSchema = z.object({
     z.object({ action: z.literal('setCompositionDuration'), compositionId: z.string(), duration: z.number() }),
     z.object({ action: z.literal('setTransitionDuration'), transitionId: z.string(), duration: z.number() }),
     z.object({ action: z.literal('addObject'), ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'arrow', 'numberline']) }),
-    z.object({ action: z.literal('createObject'), ref: z.string().regex(/^@[a-zA-Z][a-zA-Z0-9_-]{0,62}$/), ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'path', 'arrow', 'numberline']) }),
+    z.object({ action: z.literal('createObject'), ref: localReference, ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'path', 'arrow', 'numberline']) }),
+    z.object({ action: z.literal('appendComposition'), ref: localReference, transitionRef: localReference, name: z.string().trim().min(1).max(100), duration: z.number().finite().min(0).max(120000), transitionDuration: z.number().finite().min(0).max(120000) }),
   ])).max(100),
 });
 
 export interface ProposalGuard { path: string[]; expected: unknown; existed: boolean; parentIdentity?: string }
 export type GuardedChange = Change & ProposalGuard;
 export interface EditScope { selectedIds: string[]; compositionId: string | null; transitionId: string | null }
-export interface EditProposal { id: string; message: string; changes: GuardedChange[]; count: number; guards?: ProposalGuard[] }
+export interface CompositionAppend { sceneId: string; compositionIds: string[]; orderIdentity: string }
+export interface EditProposal { id: string; message: string; changes: GuardedChange[]; count: number; guards?: ProposalGuard[]; compositionAppends?: CompositionAppend[] }
 
 const safePath = (path: string[]) => path.length > 0 && path.every(key => !['__proto__', 'constructor', 'prototype'].includes(key));
 const pathKey = (path: string[]) => JSON.stringify(path);
@@ -37,6 +40,7 @@ const identityOf = (doc: Y.Doc, path: string[]) => {
   const parent = getShared(doc, path.slice(0, -1));
   return parent instanceof Y.Map ? JSON.stringify(Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(parent, 0))) : undefined;
 };
+const arrayIdentity = (array: Y.Array<unknown>) => JSON.stringify(Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(array, 0)));
 const sameValue = (first: unknown, second: unknown): boolean => {
   if (Object.is(first, second)) return true;
   if (!first || !second || typeof first !== 'object' || typeof second !== 'object') return false;
@@ -74,12 +78,43 @@ export function validateProposalForApply(doc: Y.Doc, proposal: EditProposal): vo
   for (const change of proposal.changes) {
     if (change.path[0] === 'scenes' && !project?.scenes[change.path[1]]) throw new Error('編集対象の Scene が削除されています。今の状態でもう一度依頼してください。');
     if (!(getShared(doc, change.path.slice(0, -1)) instanceof Y.Map)) throw new Error('編集対象が削除されています。今の状態でもう一度依頼してください。');
+    if (change.path[2] === 'compositionOrder') throw new Error('Composition の順序は既存の配列へ追加してください。');
+  }
+  const appends = z.array(z.object({ sceneId: z.string(), compositionIds: z.array(z.string()).min(1).max(4), orderIdentity: z.string() }).strict()).max(1).parse(proposal.compositionAppends ?? []);
+  const appendedPaths = new Set<string>();
+  const incomingPaths = new Set<string>();
+  for (const append of appends) {
+    const scene = project?.scenes[append.sceneId];
+    const order = getShared(doc, ['scenes', append.sceneId, 'compositionOrder']);
+    if (!scene || !(order instanceof Y.Array) || arrayIdentity(order) !== append.orderIdentity) throw new Error('提案後に Composition の順序が変更されました。今の状態でもう一度依頼してください。');
+    if (new Set(append.compositionIds).size !== append.compositionIds.length || scene.compositionOrder.length + append.compositionIds.length > 100) throw new Error('Composition の追加順序が無効です。');
+    let previousId = scene.compositionOrder.at(-1)!;
+    for (const id of append.compositionIds) {
+      const path = ['scenes', append.sceneId, 'compositions', id];
+      const change = proposal.changes.find(value => pathKey(value.path) === pathKey(path));
+      const comp = change?.value as Composition | undefined;
+      if (!safePath(path) || !change || change.existed || !comp || comp.id !== id || comp.deleted || !comp.incomingTransitionId) throw new Error('追加する Composition が無効です。');
+      z.number().finite().min(0).max(120000).parse(comp.duration);
+      const transitionPath = ['scenes', append.sceneId, 'transitions', comp.incomingTransitionId];
+      const transitionChange = proposal.changes.find(value => pathKey(value.path) === pathKey(transitionPath));
+      const transition = transitionChange?.value as { id: string; fromId: string; toId: string } | undefined;
+      if (!transitionChange || transitionChange.existed || !transition || transition.id !== comp.incomingTransitionId || transition.fromId !== previousId || transition.toId !== id || incomingPaths.has(pathKey(transitionPath))) throw new Error('追加する Transition の参照が無効です。');
+      appendedPaths.add(pathKey(path)); incomingPaths.add(pathKey(transitionPath)); previousId = id;
+    }
+  }
+  for (const change of proposal.changes) if (change.path[0] === 'scenes' && change.path.length === 4) {
+    if (change.path[2] === 'compositions' && !appendedPaths.has(pathKey(change.path))) throw new Error('Composition の追加情報が見つかりません。');
+    if (change.path[2] === 'transitions' && !incomingPaths.has(pathKey(change.path))) throw new Error('Transition の追加情報が見つかりません。');
   }
   // Project both duration and track edits before checking coupled timing. Recheck every
   // live track, including a peer's newly added track that was absent when AI started.
   const transitions = new Map<string, { tracks: Record<string, AnimationTrack>; duration: number }>();
   for (const change of proposal.changes) {
     const path = change.path;
+    if (path[0] === 'scenes' && path[2] === 'transitions' && path.length === 4) {
+      transitions.set(pathKey(path), structuredClone(change.value as { tracks: Record<string, AnimationTrack>; duration: number }));
+      continue;
+    }
     if (path[0] !== 'scenes' || path[2] !== 'transitions' || !['tracks', 'duration'].includes(path[4])) continue;
     const base = path.slice(0, 4); const key = pathKey(base);
     let entry = transitions.get(key);
@@ -106,130 +141,164 @@ export function validateProposalForApply(doc: Y.Doc, proposal: EditProposal): vo
   }
 }
 
+/** Apply a portable proposal atomically without replacing CRDT order arrays. */
+export function applyProposal(doc: Y.Doc, proposal: EditProposal, origin: unknown = LOCAL_ORIGIN): void {
+  validateProposalForApply(doc, proposal);
+  // Resolve and prepare every shared value before entering the transaction: Yjs
+  // transactions do not roll back, including a failure after an order append.
+  const changes = proposal.changes.map(change => ({ parent: getShared(doc, change.path.slice(0, -1)) as Y.Map<unknown>, key: change.path.at(-1)!, value: change.value === undefined ? undefined : toShared(change.value) }));
+  const appends = (proposal.compositionAppends ?? []).map(append => ({ order: getShared(doc, ['scenes', append.sceneId, 'compositionOrder']) as Y.Array<string>, ids: [...append.compositionIds] }));
+  doc.transact(() => {
+    for (const { parent, key, value } of changes) { if (value === undefined) parent.delete(key); else parent.set(key, value); }
+    for (const { order, ids } of appends) order.push(ids);
+  }, origin);
+}
+
 export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: z.infer<typeof EditProposalSchema>, _scope?: EditScope): EditProposal {
-  // Selection helps resolve the request; it is not an editing allowlist. All targets must
-  // still exist in this Scene and satisfy the same locks, values, and apply-time guards.
-  // Validate the whole model response before compiling any operation.
+  // Selection supplies context; actual Scene identities, locks and guards authorize edits.
   const input = EditProposalSchema.parse(raw);
-  const scene = owns(project.scenes, sceneId) ? project.scenes[sceneId] : undefined;
-  if (!scene) throw new Error('Scene が見つかりません。');
+  const original = owns(project.scenes, sceneId) ? project.scenes[sceneId] : undefined;
+  if (!original) throw new Error('Scene が見つかりません。');
+  const scene = structuredClone(original);
   const changes: Change[] = [];
   const guardPaths = new Map<string, string[]>();
   const base = ['scenes', sceneId];
   const guard = (path: string[]) => { if (!safePath(path)) throw new Error('編集対象が無効です。'); guardPaths.set(pathKey(path), path); };
-  guard([...base, 'deleted']);
-  // readProject derives the visible chain from raw order and tombstones. Track identity can stay
-  // unchanged while its visible source changes, so parent-map identity alone is not enough.
-  guard([...base, 'compositionOrder']);
+  guard([...base, 'deleted']); guard([...base, 'compositionOrder']);
   const rawCompositions = getShared(doc, [...base, 'compositions']);
-  if (!(rawCompositions instanceof Y.Map)) throw new Error('Composition が見つかりません。');
+  const rawOrder = getShared(doc, [...base, 'compositionOrder']);
+  if (!(rawCompositions instanceof Y.Map) || !(rawOrder instanceof Y.Array)) throw new Error('Composition が見つかりません。');
   for (const id of rawCompositions.keys()) {
     guard([...base, 'compositions', id, 'deleted']);
     guard([...base, 'compositions', id, 'incomingTransitionId']);
   }
-  const created = new Map<string, { object: SceneObject; states: Record<string, ObjectState> }>();
-  const references = new Map<string, string>();
+  const references = new Map<string, { id: string; kind: 'object' | 'composition' | 'transition' }>();
+  const declarations = new Map<object, string>();
+  const created = new Map<string, { object: SceneObject; state: ObjectState; compositionId: string; declared: boolean }>();
+  const appended: string[] = [];
+  const newTransitions = new Set<string>();
   const finalDurations = new Map<string, number>();
+  const reserve = (ref: string, kind: 'object' | 'composition' | 'transition') => {
+    if (references.has(ref) || owns(original.objects, ref) || owns(original.compositions, ref) || owns(original.transitions, ref)) throw new Error('新しい対象の参照名は、既存 ID と重複しない一意の名前にしてください。');
+    const id = newId(kind === 'object' ? 'obj' : kind === 'composition' ? 'comp' : 'transition');
+    references.set(ref, { id, kind }); return id;
+  };
+  const resolve = (value: string, kind: 'object' | 'composition' | 'transition') => {
+    const reference = references.get(value);
+    if (reference && reference.kind !== kind) throw new Error('参照名の対象の種類が一致しません。');
+    return reference?.id ?? value;
+  };
+  let appendCount = 0;
+  for (const operation of input.operations) {
+    if (operation.action === 'createObject') declarations.set(operation, reserve(operation.ref, 'object'));
+    else if (operation.action === 'addObject') declarations.set(operation, newId());
+    else if (operation.action === 'appendComposition') {
+      if (++appendCount > 4 || original.compositionOrder.length + appendCount > 100) throw new Error('一度に追加できる Composition は 4 個まで、Scene 全体では 100 個までです。');
+      reserve(operation.ref, 'composition'); reserve(operation.transitionRef, 'transition');
+    }
+  }
   const guardObject = (objectId: string) => {
-    const pending = created.get(objectId);
-    if (pending) return pending.object;
     const object = owns(scene.objects, objectId) ? scene.objects[objectId] : undefined;
     if (!object) throw new Error('編集対象のオブジェクトが見つかりません。');
     if (object.locked) throw new Error('ロック中のオブジェクトは編集できません。');
-    for (const key of ['id', 'kind', 'locked']) guard([...base, 'objects', objectId, key]);
+    if (!created.has(objectId)) for (const key of ['id', 'kind', 'locked']) guard([...base, 'objects', objectId, key]);
     return object;
   };
   const guardComposition = (compositionId: string) => {
-    if (!owns(scene.compositions, compositionId)) throw new Error('Composition が見つかりません。');
+    if (!owns(scene.compositions, compositionId)) throw new Error('Composition が見つかりません。新しい Composition は appendComposition で先に宣言してください。');
+    if (appended.includes(compositionId)) return;
     guard([...base, 'compositions', compositionId, 'id']);
-    // A fallback visible composition may itself have deleted=true; compare its request-time value.
     guard([...base, 'compositions', compositionId, 'deleted']);
-  };
-  const targetComposition = (compositionId: string) => {
-    guardComposition(compositionId);
   };
   const guardTransition = (transitionId: string) => {
     const transition = owns(scene.transitions, transitionId) ? scene.transitions[transitionId] : undefined;
-    if (!transition) throw new Error('Transition が見つかりません。');
+    if (!transition) throw new Error('Transition が見つかりません。新しい Transition は appendComposition で先に宣言してください。');
     guardComposition(transition.fromId); guardComposition(transition.toId);
-    for (const property of ['id', 'duration', 'fromId', 'toId']) guard([...base, 'transitions', transitionId, property]);
+    if (!newTransitions.has(transitionId)) for (const property of ['id', 'duration', 'fromId', 'toId']) guard([...base, 'transitions', transitionId, property]);
     return transition;
   };
-  // Allocate proposal-local references before resolving any operation. New object
-  // states are completed in memory, then emitted as whole maps under existing parents.
+  // Object references retain forward-reference compatibility. Composition declarations
+  // execute in order: later objects are not accidentally inherited by an earlier append.
   let nextOrder = Math.max(-1, ...Object.values(scene.objects).map(object => object.order)) + 1;
   for (const operation of input.operations) {
     if (operation.action === 'setTransitionDuration') {
-      const transition = guardTransition(operation.transitionId);
-      z.number().finite().min(0).max(120000).parse(operation.duration);
-      finalDurations.set(operation.transitionId, operation.duration);
-      for (const objectId of Object.keys(transition.tracks)) {
-        for (const property of ['objectId', 'start', 'duration']) guard([...base, 'transitions', transition.id, 'tracks', objectId, property]);
+      const id = resolve(operation.transitionId, 'transition');
+      z.number().finite().min(0).max(120000).parse(operation.duration); finalDurations.set(id, operation.duration);
+      if (owns(original.transitions, id)) {
+        const transition = guardTransition(id);
+        for (const objectId of Object.keys(transition.tracks)) for (const property of ['objectId', 'start', 'duration']) guard([...base, 'transitions', id, 'tracks', objectId, property]);
       }
     }
     if (operation.action !== 'addObject' && operation.action !== 'createObject') continue;
-    targetComposition(operation.compositionId);
     for (const key of ['x', 'y', 'width', 'height', 'fill', 'text', 'fontSize'] as const) validateStateValue(key, operation[key], operation.kind);
-    if (operation.action === 'createObject' && (references.has(operation.ref) || owns(scene.objects, operation.ref))) throw new Error('新しいオブジェクトの参照名は、既存 ID と重複しない一意の名前にしてください。');
-    const id = newId();
-    if (operation.action === 'createObject') references.set(operation.ref, id);
-    const object = { id, name: operation.name.trim().slice(0, 100) || operation.kind, kind: operation.kind, order: nextOrder++, locked: false, groupId: null };
+    const id = declarations.get(operation)!;
+    const compositionId = resolve(operation.compositionId, 'composition');
+    const object: SceneObject = { id, name: operation.name.trim().slice(0, 100) || operation.kind, kind: operation.kind, order: nextOrder++, locked: false, groupId: null };
     const state = defaultState(operation.kind, { x: operation.x, y: operation.y, width: operation.width, height: operation.height, fill: operation.fill, text: operation.text, fontSize: operation.fontSize });
-    const states: Record<string, ObjectState> = {};
+    created.set(id, { object, state, compositionId, declared: false }); scene.objects[id] = object;
     for (const composition of Object.values(scene.compositions)) {
       guardComposition(composition.id);
-      states[composition.id] = { ...structuredClone(state), visible: composition.id === operation.compositionId };
+      composition.states[id] = { ...structuredClone(state), visible: composition.id === compositionId };
     }
-    created.set(id, { object, states });
   }
-  const stateOf = (compositionId: string, objectId: string) => created.get(objectId)?.states[compositionId] ?? scene.compositions[compositionId]?.states[objectId];
+  const stateOf = (compositionId: string, objectId: string) => scene.compositions[compositionId]?.states[objectId];
   const tracks = new Map<string, { path: string[]; value: AnimationTrack; duration: number; existing: boolean; motionPathEdited: boolean }>();
   function editableTrack(transitionId: string, objectId: string) {
     guardObject(objectId);
     const transition = guardTransition(transitionId);
     if (!stateOf(transition.fromId, objectId) && !stateOf(transition.toId, objectId)) throw new Error('この Transition にオブジェクトがありません。');
     const path = [...base, 'transitions', transitionId, 'tracks', objectId];
-    const key = pathKey(path);
-    let entry = tracks.get(key);
+    let entry = tracks.get(pathKey(path));
     if (!entry) {
-      const existing = owns(transition.tracks, objectId);
+      const existing = !newTransitions.has(transitionId) && owns(transition.tracks, objectId);
       const duration = finalDurations.get(transitionId) ?? transition.duration;
       entry = { path, duration, existing, motionPathEdited: false, value: existing ? structuredClone(transition.tracks[objectId]) : defaultTrack(objectId, { duration }) };
-      tracks.set(key, entry);
-      // Timing is a coupled constraint. A peer changing either part invalidates this proposal.
+      tracks.set(pathKey(path), entry);
       if (existing) for (const property of ['start', 'duration']) guard([...path, property]);
     }
     return { entry, transition };
   }
-  const finalStateValue = (compositionId: string, objectId: string, property: string) => {
-    const pending = created.get(objectId);
-    if (pending) return pending.states[compositionId]?.[property as keyof ObjectState];
-    const path = [...base, 'compositions', compositionId, 'states', objectId, property];
-    return changes.findLast(change => pathKey(change.path) === pathKey(path))?.value ?? getValue(doc, path);
-  };
   for (const source of input.operations) {
-    const operation = 'objectId' in source ? { ...source, objectId: references.get(source.objectId) ?? source.objectId } : source;
-    if (operation.action === 'setState') {
-      const object = guardObject(operation.objectId);
-      targetComposition(operation.compositionId);
-      if (!stateOf(operation.compositionId, operation.objectId)) throw new Error('編集対象の状態が見つかりません。');
+    // Resolve according to the field's type; refs cannot impersonate another identity kind.
+    const operation = { ...source,
+      ...('objectId' in source ? { objectId: resolve(source.objectId, 'object') } : {}),
+      ...('compositionId' in source ? { compositionId: resolve(source.compositionId, 'composition') } : {}),
+      ...('transitionId' in source ? { transitionId: resolve(source.transitionId, 'transition') } : {}),
+    } as typeof source;
+    if (operation.action === 'appendComposition') {
+      const fromId = scene.compositionOrder.at(-1)!;
+      guardComposition(fromId);
+      const previous = scene.compositions[fromId];
+      if (!appended.includes(fromId)) {
+        // Every inherited property is a read dependency, including a peer's new state.
+        guard([...base, 'compositions', fromId, 'states']);
+        for (const objectId of Object.keys(original.compositions[fromId].states)) for (const property of ['id', 'kind']) guard([...base, 'objects', objectId, property]);
+        if (getValue(doc, [...base, 'compositions', fromId, 'deleted']) === true) changes.push({ path: [...base, 'compositions', fromId, 'deleted'], value: false });
+      }
+      const id = resolve(operation.ref, 'composition'), transitionId = resolve(operation.transitionRef, 'transition');
+      const states = structuredClone(previous.states);
+      for (const [objectId, pending] of created) if (!pending.declared) states[objectId] = { ...structuredClone(pending.state), visible: pending.compositionId === id };
+      const composition: Composition = { id, name: operation.name, duration: operation.duration, accent: previous.accent, states, deleted: false, incomingTransitionId: transitionId };
+      scene.compositions[id] = composition; scene.compositionOrder.push(id); appended.push(id);
+      scene.transitions[transitionId] = { id: transitionId, fromId, toId: id, duration: finalDurations.get(transitionId) ?? operation.transitionDuration, tracks: {} };
+      newTransitions.add(transitionId);
+    } else if (operation.action === 'addObject' || operation.action === 'createObject') {
+      guardComposition(operation.compositionId);
+      created.get(declarations.get(source)!)!.declared = true;
+    } else if (operation.action === 'setState') {
+      const object = guardObject(operation.objectId); guardComposition(operation.compositionId);
+      const state = stateOf(operation.compositionId, operation.objectId);
+      if (!state) throw new Error('編集対象の状態が見つかりません。');
       validateStateValue(operation.property, operation.value, object.kind);
-      const pending = created.get(operation.objectId);
-      if (pending) Object.assign(pending.states[operation.compositionId], { [operation.property]: operation.value });
-      else changes.push({ path: [...base, 'compositions', operation.compositionId, 'states', operation.objectId, operation.property], value: operation.value });
+      Object.assign(state, { [operation.property]: operation.value });
+      if (!created.has(operation.objectId) && !appended.includes(operation.compositionId)) changes.push({ path: [...base, 'compositions', operation.compositionId, 'states', operation.objectId, operation.property], value: operation.value });
     } else if (operation.action === 'setTrack' || operation.action === 'setMotionPath') {
       const { entry, transition } = editableTrack(operation.transitionId, operation.objectId);
       if (operation.action === 'setMotionPath') {
-        entry.value.path = operation.path;
-        entry.motionPathEdited = true;
-        if (entry.existing) {
-          changes.push({ path: [...entry.path, 'path'], value: operation.path });
-          guard([...entry.path, 'type']);
-        }
-        // Use projected endpoints here, not the raw Transition.fromId, which may name a deleted composition.
-        // Absolute scene coordinates depend on both anchors. Color and other unrelated fields remain editable.
+        entry.value.path = operation.path; entry.motionPathEdited = true;
+        if (entry.existing) { changes.push({ path: [...entry.path, 'path'], value: operation.path }); guard([...entry.path, 'type']); }
         if (!created.has(operation.objectId)) for (const compositionId of [transition.fromId, transition.toId]) {
-          for (const property of ['x', 'y', 'visible']) guard([...base, 'compositions', compositionId, 'states', operation.objectId, property]);
+          if (!appended.includes(compositionId)) for (const property of ['x', 'y', 'visible']) guard([...base, 'compositions', compositionId, 'states', operation.objectId, property]);
         }
       } else {
         if (operation.property === 'type') z.enum(['move', 'write', 'fade', 'grow', 'none']).parse(operation.value);
@@ -240,45 +309,48 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
         if (entry.existing) changes.push({ path: [...entry.path, operation.property], value: operation.value });
       }
     } else if (operation.action === 'setShapePath') {
-      const object = guardObject(operation.objectId);
-      targetComposition(operation.compositionId);
+      const object = guardObject(operation.objectId); guardComposition(operation.compositionId);
       if (object.kind !== 'path') throw new Error('図形の制御点を編集できるのはベジェ曲線だけです。移動経路には setMotionPath を使ってください。');
-      if (!stateOf(operation.compositionId, operation.objectId)) throw new Error('編集対象の状態が見つかりません。');
-      const path = [...base, 'compositions', operation.compositionId, 'states', operation.objectId];
-      const pending = created.get(operation.objectId);
-      if (pending) pending.states[operation.compositionId].path = operation.path;
-      else {
+      const state = stateOf(operation.compositionId, operation.objectId);
+      if (!state) throw new Error('編集対象の状態が見つかりません。');
+      state.path = operation.path;
+      if (!created.has(operation.objectId) && !appended.includes(operation.compositionId)) {
+        const path = [...base, 'compositions', operation.compositionId, 'states', operation.objectId];
         for (const property of ['x', 'y', 'width', 'height', 'rotation']) guard([...path, property]);
         changes.push({ path: [...path, 'path'], value: operation.path });
       }
     } else if (operation.action === 'setCompositionDuration') {
-      targetComposition(operation.compositionId);
-      z.number().finite().min(0).max(120000).parse(operation.duration);
-      changes.push({ path: [...base, 'compositions', operation.compositionId, 'duration'], value: operation.duration });
-    }
+      guardComposition(operation.compositionId); z.number().finite().min(0).max(120000).parse(operation.duration);
+      scene.compositions[operation.compositionId].duration = operation.duration;
+      if (!appended.includes(operation.compositionId)) changes.push({ path: [...base, 'compositions', operation.compositionId, 'duration'], value: operation.duration });
+    } else if (operation.action === 'setTransitionDuration') guardTransition(operation.transitionId);
   }
-  for (const [id, duration] of finalDurations) changes.push({ path: [...base, 'transitions', id, 'duration'], value: duration });
+  for (const [id, duration] of finalDurations) if (!newTransitions.has(id)) changes.push({ path: [...base, 'transitions', id, 'duration'], value: duration });
   for (const [id, pending] of created) {
     changes.push({ path: [...base, 'objects', id], value: pending.object });
-    for (const [compositionId, state] of Object.entries(pending.states)) changes.push({ path: [...base, 'compositions', compositionId, 'states', id], value: state });
+    for (const compositionId of original.compositionOrder) changes.push({ path: [...base, 'compositions', compositionId, 'states', id], value: scene.compositions[compositionId].states[id] });
   }
   for (const entry of tracks.values()) {
     validateTrackTiming(entry.value, entry.duration);
+    const transition = scene.transitions[entry.path[3]];
     if (entry.motionPathEdited && entry.value.path !== null) {
       if (entry.value.type !== 'move') throw new Error('移動経路を使うアニメーションは Move にしてください。');
-      const transition = scene.transitions[entry.path[3]];
-      if (![transition.fromId, transition.toId].every(id => finalStateValue(id, entry.value.objectId, 'visible') === true)) throw new Error('移動経路には両方の Composition に表示されるオブジェクトが必要です。');
+      if (![transition.fromId, transition.toId].every(id => stateOf(id, entry.value.objectId)?.visible === true)) throw new Error('移動経路には両方の Composition に表示されるオブジェクトが必要です。');
     }
-    if (!entry.existing) changes.push({ path: entry.path, value: entry.value });
+    if (newTransitions.has(transition.id)) transition.tracks[entry.value.objectId] = entry.value;
+    else if (!entry.existing) changes.push({ path: entry.path, value: entry.value });
   }
+  for (const id of appended) changes.push({ path: [...base, 'compositions', id], value: scene.compositions[id] });
+  for (const id of newTransitions) changes.push({ path: [...base, 'transitions', id], value: scene.transitions[id] });
   const precondition = (path: string[]): ProposalGuard => {
     const expected = getValue(doc, path);
     return { path, expected: expected ?? null, existed: expected !== undefined, parentIdentity: identityOf(doc, path) };
   };
-  // A field has one final proposed value and one precondition from the request snapshot.
   const unique = new Map(changes.map(change => [pathKey(change.path), change]));
   const guarded = [...unique.values()].filter(change => !sameValue(getValue(doc, change.path), change.value)).map(change => ({ ...change, ...precondition(change.path) }));
-  const proposal = { id: newId('proposal'), message: input.message, changes: guarded, guards: [...guardPaths.values()].map(precondition), count: guarded.length ? input.operations.length : 0 };
+  const proposal: EditProposal = { id: newId('proposal'), message: input.message, changes: guarded, guards: [...guardPaths.values()].map(precondition), count: guarded.length ? input.operations.length : 0,
+    ...(appended.length ? { compositionAppends: [{ sceneId, compositionIds: appended, orderIdentity: arrayIdentity(rawOrder) }] } : {}),
+  };
   validateProposalForApply(doc, proposal);
   return proposal;
 }

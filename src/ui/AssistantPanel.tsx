@@ -91,7 +91,7 @@ export function AssistantPanel() {
     try {
       const response = await fetch('/api/ai/propose', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: active.controller.signal,
-        body: JSON.stringify({ roomId: editor.store.roomId, sceneId: scope.sceneId, compositionId: editor.compositionId, transitionId: selection.kind === 'transition' ? selection.id : null, selectedIds: scope.selectedIds, prompt: text, history }),
+        body: JSON.stringify({ roomId: editor.store.roomId, sceneId: scope.sceneId, compositionId: editor.compositionId, transitionId: selection.kind === 'transition' ? selection.id : null, selectedIds: scope.selectedIds, prompt: text, history, supportsCompositionAppends: true }),
       });
       let data: EditProposal & { error?: string };
       try { data = await response.json(); }
@@ -119,6 +119,8 @@ export function AssistantPanel() {
       validateProposalForApply(editor.store.doc, message.proposal);
       editor.store.applyProposal(message.proposal); appliedIds.current.add(message.id);
       updateMessages(previous => previous.map(item => item.id === message.id ? { ...item, applied: true } : item));
+      const created = message.targets?.findLast(target => target.created && target.selection.kind === 'transition') ?? message.targets?.findLast(target => target.created);
+      if (created) { editor.select(created.selection); editor.setSelectedIds(created.objectIds); }
       editor.notify('編集案を適用しました。Undo で戻せます'); setError(''); setRetry(null);
     } catch (failure) { setError(failure instanceof Error ? failure.message : '適用できませんでした。'); }
   }
@@ -130,7 +132,11 @@ export function AssistantPanel() {
 
   const selectedTransition = editor.selection.kind === 'transition' ? editor.scene.transitions[editor.selection.id] : null;
   const canSuggestMotion = editor.selectedIds.length > 0 && Object.values(editor.scene.transitions).some(transition => editor.selectedIds.every(id => editor.scene.compositions[transition.fromId]?.states[id]?.visible && editor.scene.compositions[transition.toId]?.states[id]?.visible));
-  const suggestions = editor.selectedIds.length === 1 && editor.scene.objects[editor.selectedIds[0]]?.kind === 'path' && !selectedTransition
+  const suggestions = editor.scene.compositionOrder.length === 1 && Object.keys(editor.scene.objects).length === 0
+    ? ['円を作り、次の場面へ上向きの弧で動かして', '数式 E = mc^2 がゆっくり登場する次の場面を作って', '短い見出しが登場する2つの場面を作って']
+    : editor.scene.compositionOrder.length === 1 && editor.selectedIds.length > 0
+      ? ['次の場面を作り、選択した図形を右へ動かして', '次の場面で選択した図形をフェードアウトして', '選択した図形を黄色にして']
+      : editor.selectedIds.length === 1 && editor.scene.objects[editor.selectedIds[0]]?.kind === 'path' && !selectedTransition
     ? ['この曲線を上に大きく曲げて', 'この曲線を黄色にして', '線を少し太くして']
     : canSuggestMotion
       ? ['選択した図形を上に弧を描いて動かして', '動きの開始を 100ms 遅らせて', '動き始めと終わりをなめらかにして']
@@ -154,7 +160,10 @@ export function AssistantPanel() {
             <button className="primary-button small-button" onClick={() => apply(message)}>Apply edits</button>
             <button className="icon-button" aria-label="編集案を破棄" onClick={() => updateMessages(previous => previous.map(item => item.id === message.id ? { ...item, dismissed: true } : item))}><X size={13}/></button>
           </div>}
-          <div className="proposal-targets" aria-label="編集する対象">{message.targets?.map(target => <div className="proposal-target" key={`${target.selection.kind}:${target.selection.id}`}><span>{target.label}</span><button className="subtle-button small-button" onClick={() => showTarget(target)}>対象を表示</button></div>)}</div>
+          <div className="proposal-targets" aria-label="編集する対象">{message.targets?.map(target => {
+            const exists = target.selection.kind === 'composition' ? editor.scene.compositions[target.selection.id] : editor.scene.transitions[target.selection.id];
+            return <div className="proposal-target" key={`${target.selection.kind}:${target.selection.id}`}><span>{target.label}</span><button className="subtle-button small-button" disabled={target.created && !exists} onClick={() => showTarget(target)}>{target.created && !exists ? '適用後に表示' : '対象を表示'}</button></div>;
+          })}</div>
         </div>}
       </div>)}
       {pending && <div className="assistant-thinking" title={pending.scope.label}><LoaderCircle size={13} className="loading-spinner"/><span>動きを考えています…</span><button onClick={stop}>停止</button></div>}

@@ -4,7 +4,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { applyChanges, changesFor, getShared, LOCAL_ORIGIN, readProject, toShared, type Change } from '../../shared/document';
 import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
-import { validateProposalForApply, type EditProposal } from '../../shared/ai';
+import { applyProposal, type EditProposal } from '../../shared/ai';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
 import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
 
@@ -142,6 +142,7 @@ export class EditorStore {
   beginGesture() { this.undoManager.stopCapturing(); this.undoManager.captureTimeout = Infinity; }
   endGesture() { this.undoManager.captureTimeout = 400; this.undoManager.stopCapturing(); }
   get lastUndoPreservedObjects() { return this.undoManager.lastUndoPreservedObjects; }
+  get lastUndoPreservedCompositions() { return this.undoManager.lastUndoPreservedCompositions; }
   get lastUndoPreservedDurations() { return this.undoManager.lastUndoPreservedDurations; }
   undo() {
     const retained = undoPreservingPeerTracks(this.undoManager);
@@ -264,7 +265,8 @@ export class EditorStore {
   }
 
   applyProposal(proposal: EditProposal) {
-    validateProposalForApply(this.doc, proposal);
-    this.edit(proposal.changes.map(({ path, value }) => ({ path, value })));
+    this.undoManager.stopCapturing();
+    try { applyProposal(this.doc, proposal); }
+    finally { this.undoManager.stopCapturing(); }
   }
 }
