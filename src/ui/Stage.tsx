@@ -99,34 +99,37 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     if (!canEdit || event.button !== 0 || gesture.current) return;
     // Pointer capture/preventDefault must not leave keyboard focus in the Inspector.
     event.currentTarget.focus({ preventScroll: true });
+    // Focusing commits a pending Inspector field before the gesture starts.
+    const currentScene = store.scene(scene.id);
+    const currentSelected = selectedObject ? currentScene.objects[selectedObject.id] : null;
     const start = point(event), target = event.target as Element;
     const base: Gesture = { pointer: event.pointerId, sceneId: scene.id, compositionId, start, undoBefore: store.undoManager.undoStack.at(-1) };
     const handle = target.closest('[data-path-handle]')?.getAttribute('data-path-handle') as 'c1' | 'c2' | null;
     const transform = target.closest('[data-transform-handle]')?.getAttribute('data-transform-handle') as Gesture['transform'];
-    if (handle && selectedObject) {
-      if (selectedObject.locked || (!transition && !stateEditing)) return;
-      gesture.current = { ...base, handle, objectId: selectedObject.id, transitionId: transition?.id };
-    } else if (transform && selectedObject) {
-      if (!stateEditing || selectedObject.locked) return;
-      const storedState = scene.compositions[compositionId]?.states[selectedObject.id];
+    if (handle && currentSelected) {
+      if (currentSelected.locked || (!transition && !stateEditing)) return;
+      gesture.current = { ...base, handle, objectId: currentSelected.id, transitionId: transition?.id };
+    } else if (transform && currentSelected) {
+      if (!stateEditing || currentSelected.locked) return;
+      const storedState = currentScene.compositions[compositionId]?.states[currentSelected.id];
       if (!storedState?.visible) return;
-      const storedBounds = renderer.objectBounds({ object: selectedObject, state: storedState, writeProgress: 1, order: 'together' });
+      const storedBounds = renderer.objectBounds({ object: currentSelected, state: storedState, writeProgress: 1, order: 'together' });
       const stroke = Math.max(0, storedState.strokeWidth);
-      gesture.current = { ...base, objectId: selectedObject.id, transform, initialState: structuredClone(storedState), initialSize: { width: storedBounds.width - stroke, height: storedBounds.height - stroke } };
+      gesture.current = { ...base, objectId: currentSelected.id, transform, initialState: structuredClone(storedState), initialSize: { width: storedBounds.width - stroke, height: storedBounds.height - stroke } };
     } else if (tool !== 'select') {
       if (!stateEditing) return;
       gesture.current = { ...base, drawing: tool };
       setDrawPreview(defaultState(tool, { x: start.x, y: start.y, width: 1, height: 1 }));
     } else {
       const id = hitObject(start, target);
-      if (!id || !scene.objects[id]) { editor.setSelectedIds([]); return; }
-      const object = scene.objects[id];
+      if (!id || !currentScene.objects[id]) { editor.setSelectedIds([]); return; }
+      const object = currentScene.objects[id];
       const ids = event.shiftKey ? (selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]) : selectedIds.includes(id) ? selectedIds : [id];
       editor.setSelectedIds(ids);
       // Preview hit testing uses the displayed frame; writes always use stored composition state.
       if (!stateEditing || object.locked || !ids.includes(id)) return;
       const positions: Record<string, Point> = {};
-      for (const objectId of store.linkedIds(scene.id, ids)) { const state = scene.compositions[compositionId]?.states[objectId]; if (state?.visible) positions[objectId] = { x: state.x, y: state.y }; }
+      for (const objectId of store.linkedIds(scene.id, ids)) { const state = currentScene.compositions[compositionId]?.states[objectId]; if (state?.visible) positions[objectId] = { x: state.x, y: state.y }; }
       gesture.current = { ...base, positions };
     }
     store.beginGesture(); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault();

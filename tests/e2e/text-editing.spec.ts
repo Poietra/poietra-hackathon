@@ -103,3 +103,18 @@ test('double click edits the visible transition destination, while an interpolat
   await expect(page.getByTestId('stage-main')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Composition 2', exact: true })).toHaveClass(/selected/);
 });
+
+
+test('grabbing the canvas commits an unfinished Inspector value before starting the drag', async ({ page }) => {
+  await page.goto(`/?room=${crypto.randomUUID()}`); await expect(page.getByText('Live', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Circle', exact: true }).click();
+  const input = page.getByRole('spinbutton', { name: 'Position X', exact: true });
+  await input.fill('500'); // Deliberately leave the field focused, with its value uncommitted.
+  const at = await world(page, 245, 520), stage = await page.getByTestId('stage-main').boundingBox();
+  await page.mouse.move(at.x, at.y); await page.mouse.down();
+  await page.mouse.move(at.x + 30, at.y, { steps: 5 }); await page.mouse.up();
+  const expected = 500 + 30 / stage!.width * 1280;
+  await expect.poll(async () => Number(await input.inputValue())).toBeCloseTo(expected, 0);
+  await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
+  await expect(input).toHaveValue('500');
+});
