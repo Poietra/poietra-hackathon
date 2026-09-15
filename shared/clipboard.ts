@@ -1,7 +1,8 @@
 import type { Change } from './document';
 import { newId, orderedObjects, type ObjectState, type Scene, type SceneObject } from './model';
-import { parseProjectFile, PROJECT_FILE_LIMIT } from './project-file';
+import { parseProjectFile } from './project-file';
 
+const OBJECT_CLIPBOARD_LIMIT = 1024 * 1024;
 export const OBJECT_CLIPBOARD_PREFIX = 'POIETRA_OBJECTS_V1\n';
 export const OBJECT_CLIPBOARD_MIME = 'application/x-poietra-objects+json';
 export interface ObjectClipboard { objects: SceneObject[]; states: Record<string, ObjectState> }
@@ -21,12 +22,13 @@ export function serializeObjects(clipboard: ObjectClipboard): string {
     compositionOrder: ['clipboard'], compositions: { clipboard: { id: 'clipboard', name: 'Clipboard', duration: 1000, accent: '#ffffff', states: clipboard.states } }, transitions: {},
   } } };
   const text = JSON.stringify(value);
-  if (new TextEncoder().encode(text).length > PROJECT_FILE_LIMIT) throw new Error('一度にコピーするオブジェクトを減らしてください。');
+  if (new TextEncoder().encode(text).length > OBJECT_CLIPBOARD_LIMIT) throw new Error('一度にコピーするオブジェクトを減らしてください。');
   return OBJECT_CLIPBOARD_PREFIX + text;
 }
 
 export function parseObjects(text: string): ObjectClipboard | null {
   if (!text.startsWith(OBJECT_CLIPBOARD_PREFIX)) return null;
+  if (new TextEncoder().encode(text).length > OBJECT_CLIPBOARD_LIMIT + OBJECT_CLIPBOARD_PREFIX.length) throw new Error('一度にコピーするオブジェクトを減らしてください。');
   const project = parseProjectFile(text.slice(OBJECT_CLIPBOARD_PREFIX.length));
   const scene = project.scenes.clipboard;
   if (project.sceneOrder.length !== 1 || !scene || scene.compositionOrder.length !== 1 || !scene.compositions.clipboard || Object.keys(scene.transitions).length) throw new Error('コピーしたオブジェクトを読み取れませんでした。');

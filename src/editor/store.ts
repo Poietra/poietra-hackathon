@@ -6,6 +6,7 @@ import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { applyProposal, type EditProposal } from '../../shared/ai';
 import { RoomChat } from '../../shared/chat';
+import { ImageAssetSchema, type ImageAsset } from '../../shared/images';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
 import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
 
@@ -184,13 +185,15 @@ export class EditorStore {
     this.edit(changes, false);
   }
 
-  addObject(sceneId: string, compositionId: string, kind: ObjectKind, patch: Partial<ObjectState> = {}) {
+  addObject(sceneId: string, compositionId: string, kind: ObjectKind, patch: Partial<ObjectState> = {}, image?: ImageAsset, imageName?: string) {
     const scene = this.scene(sceneId);
+    if (!scene.compositions[compositionId]) throw new Error('追加先の Composition が見つかりません。');
+    if (kind === 'image') ImageAssetSchema.parse(image);
     const id = newId();
     const count = Object.values(scene.objects).filter(o => o.kind === kind).length + 1;
-    const name = `${kind === 'numberline' ? 'Number line' : kind[0].toUpperCase() + kind.slice(1)} ${count}`;
+    const name = imageName?.slice(0, 200) || `${kind === 'numberline' ? 'Number line' : kind[0].toUpperCase() + kind.slice(1)} ${count}`;
     const state = defaultState(kind, patch);
-    const changes: Change[] = [{ path: ['scenes', sceneId, 'objects', id], value: { id, name, kind, order: Math.max(-1, ...Object.values(scene.objects).map(o => o.order)) + 1, groupId: null, locked: false } }];
+    const changes: Change[] = [{ path: ['scenes', sceneId, 'objects', id], value: { id, name, kind, ...(image ? { image } : {}), order: Math.max(-1, ...Object.values(scene.objects).map(o => o.order)) + 1, groupId: null, locked: false } }];
     for (const composition of Object.values(scene.compositions)) changes.push({ path: ['scenes', sceneId, 'compositions', composition.id, 'states', id], value: { ...state, visible: composition.id === compositionId } });
     this.edit(changes);
     return id;
