@@ -99,13 +99,16 @@ async function inspectExport(blob: Blob, enabled: boolean, signal: AbortSignal) 
       const frame = await renderAt(time, enabled);
       signal.throwIfAborted();
       const expected = pixels(preview); const actual = pixels(decoded);
-      const equationArea = itemRegion(frame, 'equation');
-      const equationPixels = (target: HTMLCanvasElement) => target.getContext('2d')!.getImageData(equationArea.x, equationArea.y, equationArea.width, equationArea.height);
+      const equation = time > times.writeStart ? (() => {
+        const area = itemRegion(frame, 'equation');
+        const equationPixels = (target: HTMLCanvasElement) => target.getContext('2d')!.getImageData(area.x, area.y, area.width, area.height);
+        return { expected: region(expected, area), actual: region(actual, area), error: difference(equationPixels(preview), equationPixels(decoded)) };
+      })() : undefined;
       comparisons.push({
         timeMs: time, ...difference(expected, actual),
         halo: { expected: region(expected, circleHaloRegion(frame)), actual: region(actual, circleHaloRegion(frame)) },
         japanese: { expected: region(expected, itemRegion(frame, 'japanese')), actual: region(actual, itemRegion(frame, 'japanese')) },
-        ...(time > times.writeStart ? { equation: { expected: region(expected, equationArea), actual: region(actual, equationArea), error: difference(equationPixels(preview), equationPixels(decoded)) } } : {}),
+        ...(equation ? { equation } : {}),
       });
     }
     return { width: track.displayWidth, height: track.displayHeight, duration: await input.computeDuration(), packetCount: timestamps.length, timestamps, comparisons };
