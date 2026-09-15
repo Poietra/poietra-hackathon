@@ -101,12 +101,13 @@ test('an AI shape path changes relative controls only in the selected compositio
   } finally { room.close(); }
 });
 
-test('an out-of-selection model edit is rejected as a whole before any path is applied', async ({ page }) => {
+test('a locked-object model edit is rejected as a whole before any path is applied', async ({ page }) => {
   const room = await fixture(page);
   try {
+    applyChanges(room.doc, [{ path: ['scenes', 'scene-1', 'objects', 'sigmoid', 'locked'], value: true }]);
     await stub(page, room.doc, () => [motion(), { action: 'setShapePath', compositionId: 'comp-2', objectId: 'sigmoid', path: curve }]);
     await chooseMotion(page); await send(page);
-    await expect(page.getByRole('alert')).toContainText('選択外のオブジェクト');
+    await expect(page.getByRole('alert')).toContainText('ロック中のオブジェクト');
     await expect(page.getByRole('button', { name: 'Apply edits', exact: true })).toHaveCount(0);
     expect(readProject(room.doc)!.scenes['scene-1'].transitions['transition-1'].tracks.circle.path).toEqual(original);
   } finally { room.close(); }

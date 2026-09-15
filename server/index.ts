@@ -4,6 +4,7 @@ import { extname, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { AiRequestSchema, aiErrorMessage, createEditProposal } from './ai';
 import { getRoom, ROOM_PATTERN, rooms } from './collaboration';
+import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 
 const port = Number(process.env.PORT || 5173);
 const production = process.env.NODE_ENV === 'production';
@@ -12,7 +13,7 @@ const apiKey = process.env.OPENAI_API_KEY;
 const json = (response: ServerResponse, status: number, value: unknown) => { response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(value)); };
 async function body(request: IncomingMessage) {
   const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of request) { size += chunk.length; if (size > 65536) throw new Error('Request too large'); chunks.push(chunk); }
+  for await (const chunk of request) { size += chunk.length; if (size > AI_REQUEST_MAX_BYTES) throw new Error('Request too large'); chunks.push(chunk); }
   return JSON.parse(Buffer.concat(chunks).toString());
 }
 

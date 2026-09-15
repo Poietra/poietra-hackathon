@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import * as Y from 'yjs';
 import type { z } from 'zod';
 import { compileProposal, validateProposalForApply, type EditProposalSchema, type EditScope } from '../shared/ai';
-import { applyChanges, initializeDocument, readProject } from '../shared/document';
+import { applyChanges, initializeDocument, LOCAL_ORIGIN, readProject } from '../shared/document';
 import { makeDemoProject } from '../shared/demo';
 
 const curve = { c1: { x: 500, y: 100 }, c2: { x: 750, y: 100 } };
@@ -10,7 +10,7 @@ const relative = { c1: { x: 120, y: -250 }, c2: { x: 600, y: -20 } };
 const original = { c1: { x: 505, y: 520 }, c2: { x: 665, y: 190 } };
 type Operation = z.infer<typeof EditProposalSchema>['operations'][number];
 const docs: Y.Doc[] = [];
-const fixture = () => { const doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); docs.push(doc); return doc; };
+const fixture = (project = makeDemoProject()) => { const doc = new Y.Doc(); initializeDocument(doc, project); docs.push(doc); return doc; };
 const compile = (doc: Y.Doc, operations: Operation[], scope?: EditScope) => compileProposal(doc, readProject(doc)!, 'scene-1', { message: 'ベジェ曲線を調整します。', operations }, scope);
 const motion = (path: typeof curve | null = curve, objectId = 'circle'): Operation => ({ action: 'setMotionPath', transitionId: 'transition-1', objectId, path });
 const shape = (): Operation => ({ action: 'setShapePath', compositionId: 'comp-1', objectId: 'sigmoid', path: relative });
@@ -119,12 +119,57 @@ describe('AI Bézier path editing', () => {
     expect(() => compile(doc, [motion()])).toThrow('ロック');
   });
 
-  test('request scope rejects unrelated objects and timelines while allowing requested object creation', () => {
-    const doc = fixture(); const scope: EditScope = { selectedIds: ['circle'], compositionId: 'comp-1', transitionId: 'transition-1' };
-    expect(() => compile(doc, [motion(), shape()], scope)).toThrow('選択外のオブジェクト');
-    expect(() => compile(doc, [motion()], { ...scope, transitionId: null })).toThrow('Transition');
-    expect(() => compile(doc, [{ action: 'setState', compositionId: 'comp-2', objectId: 'circle', property: 'x', value: 950 }], scope)).toThrow('選択外の Composition');
-    expect(() => compile(doc, [{ action: 'setCompositionDuration', compositionId: 'comp-2', duration: 2000 }], scope)).toThrow('選択外の Composition');
-    expect(() => compile(doc, [{ action: 'addObject', compositionId: 'comp-1', name: 'New text', kind: 'text', x: 500, y: 100, width: 200, height: 40, fill: '#ffffff', text: 'Hello', fontSize: 30 }], scope)).not.toThrow();
+  test('Composition selection permits an identified Transition, with peer-safe Apply and Undo', () => {
+    const doc = fixture(); const before = readProject(doc)!;
+    const scope: EditScope = { selectedIds: ['circle'], compositionId: 'comp-1', transitionId: null };
+    const proposal = compile(doc, [motion()], scope);
+    const manager = new Y.UndoManager(doc.getMap('project'), { trackedOrigins: new Set([LOCAL_ORIGIN]) });
+    applyChanges(doc, [{ path: [...statePath, 'circle', 'fill'], value: '#f4ce55' }], 'peer');
+    validateProposalForApply(doc, proposal); applyChanges(doc, proposal.changes);
+    expect(readProject(doc)!.scenes['scene-1'].transitions['transition-1'].tracks.circle.path).toEqual(curve);
+    expect(readProject(doc)!.scenes['scene-1'].compositions['comp-2']).toEqual(before.scenes['scene-1'].compositions['comp-2']);
+    manager.undo();
+    expect(readProject(doc)!.scenes['scene-1'].transitions).toEqual(before.scenes['scene-1'].transitions);
+    expect(readProject(doc)!.scenes['scene-1'].compositions['comp-1'].states.circle.fill).toBe('#f4ce55');
+  });
+
+  test('explicit targets can span objects, compositions and transitions beyond the selection', () => {
+    const project = makeDemoProject(); const scene = project.scenes['scene-1'];
+    scene.compositionOrder.push('comp-3');
+    scene.compositions['comp-3'] = { ...structuredClone(scene.compositions['comp-2']), id: 'comp-3', name: 'Composition 3' };
+    scene.transitions['transition-2'] = { ...structuredClone(scene.transitions['transition-1']), id: 'transition-2', fromId: 'comp-2', toId: 'comp-3' };
+    const doc = fixture(project); const before = readProject(doc)!;
+    const scope: EditScope = { selectedIds: ['circle'], compositionId: 'comp-1', transitionId: null };
+    const operations: Operation[] = [motion(), shape(),
+      { action: 'setState', compositionId: 'comp-2', objectId: 'circle', property: 'x', value: 950 },
+      { action: 'setCompositionDuration', compositionId: 'comp-3', duration: 2000 },
+      { action: 'setMotionPath', transitionId: 'transition-2', objectId: 'circle', path: curve },
+      { action: 'setTrack', transitionId: 'transition-2', objectId: 'circle', property: 'easing', value: 'linear' },
+    ];
+    const proposal = compile(doc, operations, scope);
+    validateProposalForApply(doc, proposal); applyChanges(doc, proposal.changes);
+    const after = readProject(doc)!.scenes['scene-1'];
+    expect(after.compositions['comp-1'].states.sigmoid.path).toEqual(relative);
+    expect(after.compositions['comp-2'].states.circle.x).toBe(950);
+    expect(after.compositions['comp-3'].duration).toBe(2000);
+    for (const id of ['transition-1', 'transition-2']) {
+      expect(after.transitions[id].tracks.circle.path).toEqual(curve);
+      expect(after.transitions[id].tracks.equation).toEqual(before.scenes['scene-1'].transitions[id].tracks.equation);
+    }
+    expect(after.transitions['transition-2'].tracks.circle.easing).toBe('linear');
+    for (const id of scene.compositionOrder) expect(after.compositions[id].states.equation).toEqual(before.scenes['scene-1'].compositions[id].states.equation);
+    const late = compile(doc, [{ action: 'setMotionPath', transitionId: 'transition-2', objectId: 'circle', path: relative }], scope);
+    applyChanges(doc, [{ path: ['scenes', 'scene-1', 'compositions', 'comp-3', 'states', 'circle', 'y'], value: 300 }], 'peer');
+    expect(() => validateProposalForApply(doc, late)).toThrow('提案後');
+  });
+
+  test('selection context never relaxes locked targets, actual IDs or final timing validation', () => {
+    const doc = fixture(); const scope: EditScope = { selectedIds: ['circle'], compositionId: 'comp-1', transitionId: null };
+    applyChanges(doc, [{ path: ['scenes', 'scene-1', 'objects', 'sigmoid', 'locked'], value: true }]);
+    expect(() => compile(doc, [motion(), shape()], scope)).toThrow('ロック');
+    expect(() => compile(doc, [{ action: 'setState', compositionId: 'another-scene-comp', objectId: 'circle', property: 'x', value: 950 }], scope)).toThrow('Composition');
+    expect(() => compile(doc, [{ action: 'setTrack', transitionId: 'another-scene-transition', objectId: 'circle', property: 'duration', value: 400 }], scope)).toThrow('Transition');
+    expect(() => compile(doc, [motion(), { action: 'setTrack', transitionId: 'transition-1', objectId: 'circle', property: 'start', value: 700 }], scope)).toThrow('範囲');
+    expect(() => compile(doc, [{ action: 'addObject', compositionId: 'comp-2', name: 'New text', kind: 'text', x: 500, y: 100, width: 200, height: 40, fill: '#ffffff', text: 'Hello', fontSize: 30 }], scope)).not.toThrow();
   });
 });
