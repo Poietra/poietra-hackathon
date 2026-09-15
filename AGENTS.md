@@ -126,7 +126,7 @@ Composition・Transition の具体的な保存形式や、ベジェ曲線の編�
 
 - UI は React・TypeScript・Vite、同期は Yjs と WebSocket を使う。オブジェクトの各プロパティを別々に更新し、人と AI が同じ編集対象を扱えるようにする。
 - ブラウザでの動きの数値計算は Rust の WASM とし、型付きの編集データと時刻からフレームを評価する処理を UI から分離する。利用できる Rust ツールチェーンで直ちにビルドでき、短時間で実行・検証できることを優先した。
-- AI は OpenAI Responses API で構造化された編集案を返し、人間が適用する。API キーはサーバー側に置く。キーの設定場所は発案者から後で共有される。
+- AI は OpenAI Responses API で構造化された編集案を返し、人間が適用する。API キーはサーバー側に置く。2026-09-15 に共有環境で実 API の提案、共同編集への適用、他者の変更を残した Undo を確認した。
 - 別の PC からも共同編集に参加できる共有 URL を用意する（発案者が確認）。
 - 共有環境は Cloudflare Workers に配置し、画面・WASM・フォントを Static Assets、API を Worker、Yjs の同期と保存を部屋ごとの SQLite Durable Object で扱う。開発 PC の起動に依存せず、別の PC から同じリンクで参加できる構成を優先した（2026-09-15）。Node.js サーバーはローカル開発用に残す。
 - 配置先は Yumaboda の Cloudflare アカウントとする（2026-09-15、発案者の指定）。`wrangler.jsonc` の `account_id` をこのアカウントに固定する。
