@@ -94,7 +94,9 @@ export function validateProposalForApply(doc: Y.Doc, proposal: EditProposal): vo
   }
 }
 
-export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: z.infer<typeof EditProposalSchema>, scope?: EditScope): EditProposal {
+export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: z.infer<typeof EditProposalSchema>, _scope?: EditScope): EditProposal {
+  // Selection helps resolve the request; it is not an editing allowlist. All targets must
+  // still exist in this Scene and satisfy the same locks, values, and apply-time guards.
   // Validate the whole model response before compiling any operation.
   const input = EditProposalSchema.parse(raw);
   const scene = owns(project.scenes, sceneId) ? project.scenes[sceneId] : undefined;
@@ -114,7 +116,6 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
     guard([...base, 'compositions', id, 'incomingTransitionId']);
   }
   const guardObject = (objectId: string) => {
-    if (scope?.selectedIds.length && !scope.selectedIds.includes(objectId)) throw new Error('選択外のオブジェクトへの編集が含まれています。対象を選び直して依頼してください。');
     const object = owns(scene.objects, objectId) ? scene.objects[objectId] : undefined;
     if (!object) throw new Error('編集対象のオブジェクトが見つかりません。');
     if (object.locked) throw new Error('ロック中のオブジェクトは編集できません。');
@@ -128,13 +129,11 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
     guard([...base, 'compositions', compositionId, 'deleted']);
   };
   const targetComposition = (compositionId: string) => {
-    if (scope && scope.compositionId !== compositionId) throw new Error('選択外の Composition への編集が含まれています。対象を選び直して依頼してください。');
     guardComposition(compositionId);
   };
   const tracks = new Map<string, { path: string[]; value: AnimationTrack; duration: number; existing: boolean; motionPathEdited: boolean }>();
   function editableTrack(transitionId: string, objectId: string) {
     guardObject(objectId);
-    if (scope && scope.transitionId !== transitionId) throw new Error('編集する Transition を選んでから、もう一度依頼してください。');
     const transition = owns(scene!.transitions, transitionId) ? scene!.transitions[transitionId] : undefined;
     if (!transition) throw new Error('Transition が見つかりません。');
     guardComposition(transition.fromId); guardComposition(transition.toId);

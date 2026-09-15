@@ -55,7 +55,7 @@ test('changing the composition while waiting keeps the request target explicit',
   await page.getByRole('button', { name: 'Composition 2', exact: true }).click();
   await fulfill(route, positionProposal(640));
   await expect(page.getByRole('button', { name: '対象を表示', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Apply edits' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Apply edits' })).toBeVisible();
   await page.getByRole('button', { name: '対象を表示', exact: true }).click();
   await page.getByRole('button', { name: 'Apply edits' }).click();
   await design(page); await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('640');

@@ -7,6 +7,7 @@ import { makeDemoProject } from '../shared/demo';
 import { initializeDocument } from '../shared/document';
 import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, type AiRequest } from '../server/ai';
 import { presenceMessage, readPresenceUpdate, type Presence } from './presence';
+import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
 const MAX_UPDATE_BYTES = 2 * 1024 * 1024;
@@ -21,7 +22,7 @@ async function readJson(request: Request): Promise<unknown> {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > 65536) { await reader.cancel(); throw new Error('Request is too large'); }
+      if (size > AI_REQUEST_MAX_BYTES) { await reader.cancel(); throw new Error('Request is too large'); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }

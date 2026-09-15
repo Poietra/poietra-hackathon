@@ -103,7 +103,7 @@ test('group controls share keyboard semantics, distinguish members, and preserve
     await page.getByRole('button', { name: 'Group', exact: true }).click();
     await page.keyboard.press('Control+Shift+g');
     await expect(page.locator('[data-group-id]')).toHaveCount(0);
-    expect(room.scene().objects.circle.groupId).toBeNull(); expect(room.scene().objects.second.groupId).toBeNull();
+    await expect.poll(() => [room.scene().objects.circle.groupId, room.scene().objects.second.groupId]).toEqual([null, null]);
     expect(await page.locator('.layer-tree [data-layer-id]').evaluateAll(rows => rows.map(row => row.getAttribute('data-layer-id')))).toEqual(['second', 'equation', 'circle', 'sigmoid']);
   } finally { room.close(); }
 });
