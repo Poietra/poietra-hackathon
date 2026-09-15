@@ -95,3 +95,19 @@ pnpm exec playwright test --config tests/e2e/export.config.ts
 - 通常テキストのサイズはブラウザでは読み込んだフォントで計測し、Node.js では近似値を返します。同梱フォントにない文字・絵文字は環境依存の表示です。
 - MP4 の寸法は偶数。サイズ比率を変えると余白を入れて Scene の比率を保ちます。WebM は最終フレームを丸ごと保持するため、端数のある Scene は最大1フレーム未満長くなり、実際の長さを返します。
 - エンコード・ファイル確定中の中断は、実行中の呼び出しが終わってから解放します。メモリ上で動画をまとめるため、まず短いハッカソン用動画を対象とします。
+
+## 共通 Canvas 描画と WebGL2 Glow
+
+`createFramePainter(canvas)`（[painter.ts](src/engine/painter.ts)）は、準備済み Scene の評価フレームを Canvas に描きます。呼び出し側で `prepareScene(scene)` を完了させ、`render(frame)` を直列に呼んでください。`dispose()` で画像・GPU 資源を解放します。契約は [painter-contract.ts](src/engine/painter-contract.ts) に従います。
+
+Glow は対象オブジェクトだけを透明な画像にし、GLSL の横・縦の Gaussian ぼかしと元画像の合成で描きます。光の強さは既存 SVG に合わせ、位置・回転・透明度の変更時は画像を再利用します。レイヤー順に完成フレームを組み立ててから出力 Canvas に反映します。
+
+出力 Canvas は 2D、WebGL2 は内部 Canvas で使います。WebGL2 非対応・context lost 時は既存 SVG と Canvas 2D に切り替え、`backend` で実際の経路を返します。
+
+専用ページ: `pnpm exec vite --port 5176` を起動し、`http://localhost:5176/tests/e2e/fixtures/effects.html` を開きます。
+
+```bash
+pnpm exec playwright test --config tests/e2e/effects.config.ts
+```
+
+実装途中: 実 Chrome の WebGL2 描画、Glow の対象限定、Write・Move・リサイズの smoke テストを確認済みです。動画接続、フォールバックと解放、性能測定を続けます。
