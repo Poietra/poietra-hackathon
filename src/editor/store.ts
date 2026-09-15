@@ -1,10 +1,10 @@
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { applyChanges, changesFor, getShared, getValue, LOCAL_ORIGIN, readProject, toShared, type Change } from '../../shared/document';
+import { applyChanges, changesFor, getShared, LOCAL_ORIGIN, readProject, toShared, type Change } from '../../shared/document';
 import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
-import type { EditProposal } from '../../shared/ai';
+import { validateProposalForApply, type EditProposal } from '../../shared/ai';
 
 export interface Peer {
   clientId: number;
@@ -52,7 +52,10 @@ export class EditorStore {
     const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/sync`;
     this.provider = new WebsocketProvider(url, roomId, this.doc, { disableBc: true });
     this.provider.awareness.setLocalStateField('user', { name: this.userName, color: this.color });
-    this.provider.on('status', ({ status }: { status: EditorSnapshot['status'] }) => this.refresh({ status }));
+    this.provider.on('status', ({ status }: { status: EditorSnapshot['status'] }) => {
+      if (status === 'connected') this.provider.awareness.setLocalState(this.provider.awareness.getLocalState());
+      this.refresh({ status });
+    });
     this.provider.on('sync', (synced: boolean) => this.refresh({ synced }));
     this.doc.on('update', () => this.refresh({ project: readProject(this.doc) }));
     this.provider.awareness.on('change', () => this.refresh());
@@ -69,8 +72,8 @@ export class EditorStore {
   snapshot = () => this.state;
   setName(name: string) { this.userName = name.trim().slice(0, 40) || this.userName; localStorage.setItem('poietra-user-name', this.userName); this.provider.awareness.setLocalStateField('user', { name: this.userName, color: this.color }); }
   presence(state: Partial<Peer>) { this.provider.awareness.setLocalStateField('editor', { ...this.provider.awareness.getLocalState()?.editor, ...state }); }
-  beginGesture() { this.undoManager.stopCapturing(); }
-  endGesture() { this.undoManager.stopCapturing(); }
+  beginGesture() { this.undoManager.stopCapturing(); this.undoManager.captureTimeout = Infinity; }
+  endGesture() { this.undoManager.captureTimeout = 400; this.undoManager.stopCapturing(); }
   undo() { this.undoManager.undo(); }
   redo() { this.undoManager.redo(); }
   edit(changes: Change[], separate = true) { if (separate) this.undoManager.stopCapturing(); applyChanges(this.doc, changes); if (separate) this.undoManager.stopCapturing(); }
@@ -83,6 +86,7 @@ export class EditorStore {
 
   updateState(sceneId: string, compositionId: string, objectId: string, patch: Partial<ObjectState>, separate = true) {
     const scene = this.scene(sceneId);
+    if (!scene.objects[objectId] || scene.objects[objectId].locked) return;
     const base = ['scenes', sceneId, 'compositions', compositionId, 'states', objectId];
     if (!scene.compositions[compositionId]) return;
     if (!scene.compositions[compositionId].states[objectId]) {
@@ -95,7 +99,7 @@ export class EditorStore {
   translate(sceneId: string, compositionId: string, starts: Record<string, { x: number; y: number }>, dx: number, dy: number) {
     const scene = this.scene(sceneId);
     const changes = Object.entries(starts).flatMap(([id, point]) => {
-      if (!scene.objects[id] || !scene.compositions[compositionId]?.states[id]) return [];
+      if (!scene.objects[id] || scene.objects[id].locked || !scene.compositions[compositionId]?.states[id]) return [];
       return changesFor(['scenes', sceneId, 'compositions', compositionId, 'states', id], { x: Math.round((point.x + dx) * 10) / 10, y: Math.round((point.y + dy) * 10) / 10 });
     });
     this.edit(changes, false);
@@ -137,15 +141,18 @@ export class EditorStore {
   setComposition(sceneId: string, id: string, patch: Partial<Pick<Composition, 'name' | 'duration'>>) { this.edit(changesFor(['scenes', sceneId, 'compositions', id], patch)); }
 
   setTransitionDuration(sceneId: string, id: string, duration: number) {
-    const transition = this.scene(sceneId).transitions[id]; if (!transition) return;
+    const scene = this.scene(sceneId);
+    const transition = scene.transitions[id]; if (!transition) return;
+    duration = Math.max(duration, ...Object.values(transition.tracks).filter(track => scene.objects[track.objectId]?.locked).map(track => track.start + track.duration));
     const base = ['scenes', sceneId, 'transitions', id];
     const changes: Change[] = [{ path: [...base, 'duration'], value: duration }];
-    for (const [objectId, track] of Object.entries(transition.tracks)) changes.push(...changesFor([...base, 'tracks', objectId], { start: Math.min(track.start, duration), duration: Math.min(track.duration, Math.max(0, duration - track.start)) }));
+    for (const [objectId, track] of Object.entries(transition.tracks)) if (!scene.objects[objectId]?.locked) changes.push(...changesFor([...base, 'tracks', objectId], { start: Math.min(track.start, duration), duration: Math.min(track.duration, Math.max(0, duration - track.start)) }));
     this.edit(changes);
   }
 
   setTrack(sceneId: string, transitionId: string, objectId: string, patch: Partial<AnimationTrack>, separate = true) {
-    const transition = this.scene(sceneId).transitions[transitionId]; if (!transition) return;
+    const scene = this.scene(sceneId);
+    const transition = scene.transitions[transitionId]; if (!transition || !scene.objects[objectId] || scene.objects[objectId].locked) return;
     const base = ['scenes', sceneId, 'transitions', transitionId, 'tracks', objectId];
     if (!transition.tracks[objectId]) this.edit([{ path: base, value: defaultTrack(objectId, { duration: transition.duration, ...patch }) }], separate);
     else this.edit(changesFor(base, patch), separate);
@@ -158,24 +165,22 @@ export class EditorStore {
   }
 
   link(sceneId: string, ids: string[]) {
+    ids = this.linkedIds(sceneId, ids);
     if (ids.length < 2) return; const groupId = newId('group');
     this.edit(ids.flatMap(id => changesFor(['scenes', sceneId, 'objects', id], { groupId })));
   }
   unlink(sceneId: string, ids: string[]) { this.edit(this.linkedIds(sceneId, ids).flatMap(id => changesFor(['scenes', sceneId, 'objects', id], { groupId: null }))); }
-  hide(sceneId: string, compositionId: string, ids: string[]) { this.edit(ids.filter(id => !!this.scene(sceneId).compositions[compositionId]?.states[id]).flatMap(id => changesFor(['scenes', sceneId, 'compositions', compositionId, 'states', id], { visible: false }))); }
+  hide(sceneId: string, compositionId: string, ids: string[]) { const scene = this.scene(sceneId); this.edit(ids.filter(id => scene.objects[id] && !scene.objects[id].locked && !!scene.compositions[compositionId]?.states[id]).flatMap(id => changesFor(['scenes', sceneId, 'compositions', compositionId, 'states', id], { visible: false }))); }
 
   duplicate(sceneId: string, compositionId: string, ids: string[]) {
     const scene = this.scene(sceneId); const created: string[] = [];
     this.undoManager.stopCapturing();
-    this.doc.transact(() => { for (const id of ids) { const object = scene.objects[id]; const state = scene.compositions[compositionId]?.states[id]; if (object && state) created.push(this.addObject(sceneId, compositionId, object.kind, { ...state, x: state.x + 24, y: state.y + 24 })); } }, LOCAL_ORIGIN);
+    this.doc.transact(() => { for (const id of ids) { const object = scene.objects[id]; const state = scene.compositions[compositionId]?.states[id]; if (object && !object.locked && state) created.push(this.addObject(sceneId, compositionId, object.kind, { ...state, x: state.x + 24, y: state.y + 24 })); } }, LOCAL_ORIGIN);
     this.undoManager.stopCapturing(); return created;
   }
 
   applyProposal(proposal: EditProposal) {
-    for (const change of proposal.changes) {
-      const current = getValue(this.doc, change.path);
-      if ((current !== undefined) !== change.existed || (change.existed && JSON.stringify(current) !== JSON.stringify(change.expected))) throw new Error('提案後に対象が変更されました。今の状態でもう一度依頼してください。');
-    }
+    validateProposalForApply(this.doc, proposal);
     this.edit(proposal.changes.map(({ path, value }) => ({ path, value })));
   }
 }

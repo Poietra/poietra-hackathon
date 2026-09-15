@@ -36,6 +36,9 @@ export function readPresenceUpdate(update: Uint8Array, previous: Presence | null
     const value: unknown = JSON.parse(decoding.readVarString(decoder));
     // Each browser socket owns its own presence. A peer timeout must not remove someone else.
     if (next && (next.clientId !== clientId || clock < next.clock)) continue;
+    // Match the awareness protocol: an equal clock may only remove a live state.
+    // Replayed non-null states must not resurrect a closed connection's presence.
+    if (next && clock === next.clock && (value !== null || next.state === null)) continue;
     if (!next && value === null) continue;
     next = { clientId, clock, state: cleanState(value) };
   }
