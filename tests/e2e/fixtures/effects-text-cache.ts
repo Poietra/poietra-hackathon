@@ -106,5 +106,3 @@ export async function abortTextPreparation() {
     Object.defineProperty(HTMLImageElement.prototype, 'src', src);
   }
 }
-
-
