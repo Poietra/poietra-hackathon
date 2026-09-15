@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import * as Y from 'yjs';
-import { applyChanges, initializeDocument } from '../shared/document';
+import { applyChanges, initializeDocument, readProject } from '../shared/document';
 import { makeDemoProject } from '../shared/demo';
 import { validateProposalForApply } from '../shared/ai';
 
@@ -14,7 +14,7 @@ beforeEach(() => {
   doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); generate.mockReset(); constructed.length = 0;
   vi.spyOn(console, 'log').mockImplementation(() => {}); vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
-afterEach(() => { doc.destroy(); vi.restoreAllMocks(); });
+afterEach(() => { doc.destroy(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 test.each([false, true])('composition append requires an explicitly capable client (%s)', async supported => {
   parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '次の場面を追加します。', operations: [
@@ -243,6 +243,7 @@ test('generateImage produces the picture after validation and compiles it as an 
   const proposal = await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images });
   expect(generate).toHaveBeenCalledTimes(1);
   expect(generate.mock.calls[0][0]).toMatchObject({ model: 'test-image-model', prompt: picture.prompt, size: '1536x1024', quality: 'medium', background: 'transparent', output_format: 'webp', output_compression: 80, n: 1 });
+  expect(generate.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   expect(stored).toHaveLength(1); expect(stored[0].mime).toBe('image/webp'); expect(stored[0].bytes).toEqual(WEBP);
   const object = proposal.changes.find(change => change.path[2] === 'objects')!.value as { kind: string; name: string; image: { src: string; width: number; height: number } };
   expect(object).toMatchObject({ kind: 'image', name: 'Star', image: { src: `/api/rooms/ai-unit-test-room/images/${'a'.repeat(64)}`, width: 1536, height: 1024 } });
@@ -298,4 +299,72 @@ test('a slow proposal skips picture generation instead of outliving the room loc
   parse.mockImplementationOnce(async () => { now += 61_000; return withPicture(); });
   await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images })).rejects.toThrow('時間内に画像を生成できませんでした');
   expect(generate).not.toHaveBeenCalled();
+});
+
+test('both generations share one deadline signal and successful requests release its timer', async () => {
+  vi.useFakeTimers();
+  parse.mockResolvedValueOnce(missingTarget).mockResolvedValueOnce(centered);
+  await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
+  const first = parse.mock.calls[0][1].signal as AbortSignal;
+  expect(first).toBeInstanceOf(AbortSignal);
+  expect(parse.mock.calls[1][1].signal).toBe(first);
+  expect(first.aborted).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
+  await vi.advanceTimersByTimeAsync(180_000);
+  expect(first.aborted).toBe(false);
+});
+
+test('the shared deadline returns during an abort-unaware SDK wait and ignores its late response', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const before = readProject(doc);
+  parse.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(missingTarget), 49_000)))
+    .mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(centered), 200_000)));
+  const outcome = createEditProposal(doc, input, 'test-key-never-sent', 'test-model').then(value => ({ value }), error => ({ error }));
+  await vi.advanceTimersByTimeAsync(169_999);
+  const signal = parse.mock.calls[1][1].signal as AbortSignal;
+  expect(signal.aborted).toBe(false);
+  expect(parse).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await outcome).toMatchObject({ error: { message: expect.stringContaining('時間内に完了しませんでした') } });
+  expect(signal.aborted).toBe(true);
+  expect(readProject(doc)).toEqual(before);
+  expect(vi.mocked(console.warn).mock.calls.map(([entry]) => JSON.parse(entry).event)).toContain('ai_request_timeout');
+  await vi.advanceTimersByTimeAsync(130_000);
+  expect(parse).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(console.log)).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test('real SDK Retry-After plus repair cannot outlive the 170 second request deadline', async () => {
+  // Only HTTP is stubbed: exercise the installed SDK's real retry and abort behavior.
+  const { default: ActualOpenAI } = await vi.importActual<typeof import('openai')>('openai');
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const signals: AbortSignal[] = [];
+  const fetch = vi.fn(async (_url: unknown, options?: RequestInit) => {
+    const call = signals.length; const signal = options!.signal!; signals.push(signal);
+    return new Promise<Response>((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', abort);
+        if (call === 1) resolve(new Response(JSON.stringify({ error: { message: 'stub retry', type: 'rate_limit_error' } }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } }));
+        else resolve(new Response(JSON.stringify({ id: 'resp_stub', object: 'response', status: 'completed', output: [{ id: 'msg_stub', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', annotations: [], text: JSON.stringify((call === 0 ? missingTarget : centered).output_parsed) }] }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }, call === 0 ? 49_000 : 59_000);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  });
+  const actual = new ActualOpenAI({ apiKey: 'test-key-never-sent', timeout: 60_000, maxRetries: 1, fetch });
+  parse.mockImplementation((body, options) => actual.responses.parse(body, options));
+  const outcome = createEditProposal(doc, input, 'test-key-never-sent', 'test-model').then(value => ({ value }), error => ({ error }));
+  await vi.advanceTimersByTimeAsync(169_999);
+  // 49 s first response + 59 s repair failure + 60 s Retry-After = 168 s.
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(signals[2].aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await outcome).toMatchObject({ error: { message: expect.stringContaining('時間内に完了しませんでした') } });
+  expect(signals[2].aborted).toBe(true);
+  await vi.advanceTimersByTimeAsync(130_000);
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(console.log)).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
 });

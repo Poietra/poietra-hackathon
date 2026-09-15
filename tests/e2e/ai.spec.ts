@@ -146,3 +146,21 @@ test('an AI proposal that generated a picture adds an image object which renders
   await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
   await expect(page.getByRole('button', { name: 'AI star', exact: true })).toHaveCount(0);
 });
+
+test('Ctrl+Enter refuses automatic application after a collaborator changes the requested property', async ({ page, browser }) => {
+  const context = await browser.newContext(), peer = await context.newPage(), room = crypto.randomUUID();
+  try {
+    await Promise.all([open(page, room), open(peer, room)]); await assistant(page);
+    let pending!: Route;
+    await page.route('**/api/ai/propose', route => { pending = route; });
+    const composer = page.getByRole('textbox', { name: 'チャットメッセージ' });
+    await composer.fill('@codex 円を中央にしてください'); await composer.press('Control+Enter');
+    await expect.poll(() => !!pending).toBe(true);
+    await setX(peer, '350');
+    await design(page); await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('350'); await assistant(page);
+    await fulfill(pending, positionProposal(640));
+    await expect(page.getByRole('alert')).toContainText('提案後に対象が変更');
+    await expect(page.getByText('Applied', { exact: true })).toHaveCount(0);
+    await expect(peer.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('350');
+  } finally { await context.close(); }
+});
