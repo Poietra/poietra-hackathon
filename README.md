@@ -6,7 +6,7 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 図形・文字・数式・画像・動画素材を配置し、独立した音声トラックと組み合わせて動画を書き出せます。
 共有チャットで `@codex` に編集を頼んだ後も、位置や色、動きのタイミングを人間が調整できます。
 
-**[ブラウザで使う →](https://poietra-hackathon.yumaboda-official.workers.dev)**
+**[ブラウザで使う →](https://poietra.com)**
 
 ![Poietra の編集画面。ベジェ曲線と AI が生成した星をキャンバスに配置し、右側の共有チャットで編集案を適用している。](docs/assets/studio.png)
 
@@ -23,7 +23,7 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 
 ## はじめて使う
 
-1. [Poietra を開く](https://poietra-hackathon.yumaboda-official.workers.dev)。
+1. [Poietra を開く](https://poietra.com)。
 2. 一番左上の **Poietra ロゴ → New project** で、空のプロジェクトと新しい部屋を作ります。
 3. **Share → Copy link** で URL を送り、別の PC やブラウザから参加します。
 4. オブジェクトを配置し、下部の Composition と Transition で動きを組みます。
@@ -32,6 +32,8 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 例から始める場合は、Poietra ロゴのメニューから **Try the example**（ベジェ曲線と数式）か **Follow the gradient**（微分と連鎖律）を選んでください。例も新しい部屋で開き、自由に編集できます。
 
 リンクを知っている人は編集できます。アカウント登録や閲覧専用の権限はありません。表示名は Share から変更できます。
+
+以前の `workers.dev` の共有リンクも利用できます。既存の部屋を `poietra.com` で開く場合は、URL の `?room=...` を残してホスト名だけ変更してください。ブラウザ内の履歴・未同期の編集はドメインごとに保存されるため、旧ドメインで同期が完了してから移動します。
 
 ### Scene・Composition・Transition
 
@@ -173,6 +175,7 @@ pnpm test:core
 ## Cloudflare で動かす
 
 共有環境は Cloudflare Workers に配置しています。UI・WASM・フォントを Static Assets、共同編集と素材保存を部屋ごとの SQLite Durable Object で扱います。
+公開ドメインは **https://poietra.com** です。`wrangler.jsonc` の Custom Domain 設定で既存 Worker に接続し、新旧 URL で同じ部屋と素材を共有します。
 
 ### ローカルの Worker
 
