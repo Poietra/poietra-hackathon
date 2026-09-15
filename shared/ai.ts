@@ -3,12 +3,20 @@ import { getShared, getValue, type Change } from './document';
 import { defaultState, defaultTrack, newId, type AnimationTrack, type ObjectKind, type Project } from './model';
 import * as Y from 'yjs';
 
+const pathCoordinate = z.number().finite().min(-10000).max(10000);
+const bezierPath = z.object({
+  c1: z.object({ x: pathCoordinate, y: pathCoordinate }),
+  c2: z.object({ x: pathCoordinate, y: pathCoordinate }),
+});
+
 const stateProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'fill', 'stroke', 'strokeWidth', 'text', 'fontSize', 'cornerRadius', 'effect'] as const;
 export const EditProposalSchema = z.object({
   message: z.string().max(3000),
   operations: z.array(z.discriminatedUnion('action', [
     z.object({ action: z.literal('setState'), compositionId: z.string(), objectId: z.string(), property: z.enum(stateProperties), value: z.union([z.number(), z.string(), z.boolean()]) }),
     z.object({ action: z.literal('setTrack'), transitionId: z.string(), objectId: z.string(), property: z.enum(['type', 'start', 'duration', 'easing', 'order']), value: z.union([z.number(), z.string()]) }),
+    z.object({ action: z.literal('setMotionPath'), transitionId: z.string(), objectId: z.string(), path: bezierPath.nullable() }),
+    z.object({ action: z.literal('setShapePath'), compositionId: z.string(), objectId: z.string(), path: bezierPath }),
     z.object({ action: z.literal('setCompositionDuration'), compositionId: z.string(), duration: z.number() }),
     z.object({ action: z.literal('addObject'), compositionId: z.string(), name: z.string(), kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'arrow', 'numberline']), x: z.number(), y: z.number(), width: z.number(), height: z.number(), fill: z.string(), text: z.string(), fontSize: z.number() }),
   ])).max(100),
@@ -16,6 +24,7 @@ export const EditProposalSchema = z.object({
 
 export interface ProposalGuard { path: string[]; expected: unknown; existed: boolean; parentIdentity?: string }
 export type GuardedChange = Change & ProposalGuard;
+export interface EditScope { selectedIds: string[]; compositionId: string | null; transitionId: string | null }
 export interface EditProposal { id: string; message: string; changes: GuardedChange[]; count: number; guards?: ProposalGuard[] }
 
 const safePath = (path: string[]) => path.length > 0 && path.every(key => !['__proto__', 'constructor', 'prototype'].includes(key));
@@ -83,7 +92,7 @@ export function validateProposalForApply(doc: Y.Doc, proposal: EditProposal): vo
   }
 }
 
-export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: z.infer<typeof EditProposalSchema>): EditProposal {
+export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: z.infer<typeof EditProposalSchema>, scope?: EditScope): EditProposal {
   // Validate the whole model response before compiling any operation.
   const input = EditProposalSchema.parse(raw);
   const scene = owns(project.scenes, sceneId) ? project.scenes[sceneId] : undefined;
@@ -92,7 +101,17 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
   const guardPaths = new Map<string, string[]>();
   const base = ['scenes', sceneId];
   const guard = (path: string[]) => { if (!safePath(path)) throw new Error('編集対象が無効です。'); guardPaths.set(pathKey(path), path); };
+  // readProject derives the visible chain from raw order and tombstones. Track identity can stay
+  // unchanged while its visible source changes, so parent-map identity alone is not enough.
+  guard([...base, 'compositionOrder']);
+  const rawCompositions = getShared(doc, [...base, 'compositions']);
+  if (!(rawCompositions instanceof Y.Map)) throw new Error('Composition が見つかりません。');
+  for (const id of rawCompositions.keys()) {
+    guard([...base, 'compositions', id, 'deleted']);
+    guard([...base, 'compositions', id, 'incomingTransitionId']);
+  }
   const guardObject = (objectId: string) => {
+    if (scope?.selectedIds.length && !scope.selectedIds.includes(objectId)) throw new Error('選択外のオブジェクトへの編集が含まれています。対象を選び直して依頼してください。');
     const object = owns(scene.objects, objectId) ? scene.objects[objectId] : undefined;
     if (!object) throw new Error('編集対象のオブジェクトが見つかりません。');
     if (object.locked) throw new Error('ロック中のオブジェクトは編集できません。');
@@ -102,44 +121,82 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
   const guardComposition = (compositionId: string) => {
     if (!owns(scene.compositions, compositionId)) throw new Error('Composition が見つかりません。');
     guard([...base, 'compositions', compositionId, 'id']);
+    // A fallback visible composition may itself have deleted=true; compare its request-time value.
+    guard([...base, 'compositions', compositionId, 'deleted']);
   };
-  const tracks = new Map<string, { path: string[]; value: AnimationTrack; duration: number; existing: boolean }>();
+  const targetComposition = (compositionId: string) => {
+    if (scope && scope.compositionId !== compositionId) throw new Error('選択外の Composition への編集が含まれています。対象を選び直して依頼してください。');
+    guardComposition(compositionId);
+  };
+  const tracks = new Map<string, { path: string[]; value: AnimationTrack; duration: number; existing: boolean; motionPathEdited: boolean }>();
+  function editableTrack(transitionId: string, objectId: string) {
+    guardObject(objectId);
+    if (scope && scope.transitionId !== transitionId) throw new Error('編集する Transition を選んでから、もう一度依頼してください。');
+    const transition = owns(scene!.transitions, transitionId) ? scene!.transitions[transitionId] : undefined;
+    if (!transition) throw new Error('Transition が見つかりません。');
+    guardComposition(transition.fromId); guardComposition(transition.toId);
+    if (!scene!.compositions[transition.fromId].states[objectId] && !scene!.compositions[transition.toId].states[objectId]) throw new Error('この Transition にオブジェクトがありません。');
+    const path = [...base, 'transitions', transitionId, 'tracks', objectId];
+    const key = pathKey(path);
+    let entry = tracks.get(key);
+    if (!entry) {
+      const existing = owns(transition.tracks, objectId);
+      entry = { path, duration: transition.duration, existing, motionPathEdited: false, value: existing ? structuredClone(transition.tracks[objectId]) : defaultTrack(objectId, { duration: transition.duration }) };
+      tracks.set(key, entry);
+      for (const property of ['id', 'duration', 'fromId', 'toId']) guard([...base, 'transitions', transitionId, property]);
+      // Timing is a coupled constraint. A peer changing either part invalidates this proposal.
+      if (existing) for (const property of ['start', 'duration']) guard([...path, property]);
+    }
+    return { entry, transition };
+  }
+  const finalStateValue = (compositionId: string, objectId: string, property: string) => {
+    const path = [...base, 'compositions', compositionId, 'states', objectId, property];
+    return changes.findLast(change => pathKey(change.path) === pathKey(path))?.value ?? getValue(doc, path);
+  };
   let nextOrder = Math.max(-1, ...Object.values(scene.objects).map(object => object.order)) + 1;
   for (const operation of input.operations) {
     if (operation.action === 'setState') {
       const object = guardObject(operation.objectId);
-      guardComposition(operation.compositionId);
+      targetComposition(operation.compositionId);
       if (!owns(scene.compositions[operation.compositionId].states, operation.objectId)) throw new Error('編集対象の状態が見つかりません。');
       validateStateValue(operation.property, operation.value, object.kind);
       changes.push({ path: [...base, 'compositions', operation.compositionId, 'states', operation.objectId, operation.property], value: operation.value });
-    } else if (operation.action === 'setTrack') {
-      guardObject(operation.objectId);
-      const transition = owns(scene.transitions, operation.transitionId) ? scene.transitions[operation.transitionId] : undefined;
-      if (!transition) throw new Error('Transition が見つかりません。');
-      if (!scene.compositions[transition.fromId]?.states[operation.objectId] && !scene.compositions[transition.toId]?.states[operation.objectId]) throw new Error('この Transition にオブジェクトがありません。');
-      const path = [...base, 'transitions', operation.transitionId, 'tracks', operation.objectId];
-      const key = pathKey(path);
-      let entry = tracks.get(key);
-      if (!entry) {
-        const existing = owns(transition.tracks, operation.objectId);
-        entry = { path, duration: transition.duration, existing, value: existing ? structuredClone(transition.tracks[operation.objectId]) : defaultTrack(operation.objectId, { duration: transition.duration }) };
-        tracks.set(key, entry);
-        for (const property of ['id', 'duration', 'fromId', 'toId']) guard([...base, 'transitions', operation.transitionId, property]);
-        // Timing is a coupled constraint. A peer changing either part invalidates this proposal.
-        if (existing) for (const property of ['start', 'duration']) guard([...path, property]);
+    } else if (operation.action === 'setTrack' || operation.action === 'setMotionPath') {
+      const { entry, transition } = editableTrack(operation.transitionId, operation.objectId);
+      if (operation.action === 'setMotionPath') {
+        entry.value.path = operation.path;
+        entry.motionPathEdited = true;
+        if (entry.existing) {
+          changes.push({ path: [...entry.path, 'path'], value: operation.path });
+          guard([...entry.path, 'type']);
+        }
+        // Use projected endpoints here, not the raw Transition.fromId, which may name a deleted composition.
+        // Absolute scene coordinates depend on both anchors. Color and other unrelated fields remain editable.
+        for (const compositionId of [transition.fromId, transition.toId]) {
+          for (const property of ['x', 'y', 'visible']) guard([...base, 'compositions', compositionId, 'states', operation.objectId, property]);
+        }
+      } else {
+        if (operation.property === 'type') z.enum(['move', 'write', 'fade', 'grow', 'none']).parse(operation.value);
+        else if (operation.property === 'easing') z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']).parse(operation.value);
+        else if (operation.property === 'order') z.enum(['together', 'sequential']).parse(operation.value);
+        else z.number().finite().min(0).max(transition.duration).parse(operation.value);
+        Object.assign(entry.value, { [operation.property]: operation.value });
+        if (entry.existing) changes.push({ path: [...entry.path, operation.property], value: operation.value });
       }
-      if (operation.property === 'type') z.enum(['move', 'write', 'fade', 'grow', 'none']).parse(operation.value);
-      else if (operation.property === 'easing') z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']).parse(operation.value);
-      else if (operation.property === 'order') z.enum(['together', 'sequential']).parse(operation.value);
-      else z.number().finite().min(0).max(transition.duration).parse(operation.value);
-      Object.assign(entry.value, { [operation.property]: operation.value });
-      if (entry.existing) changes.push({ path: [...path, operation.property], value: operation.value });
+    } else if (operation.action === 'setShapePath') {
+      const object = guardObject(operation.objectId);
+      targetComposition(operation.compositionId);
+      if (object.kind !== 'path') throw new Error('図形の制御点を編集できるのはベジェ曲線だけです。移動経路には setMotionPath を使ってください。');
+      if (!owns(scene.compositions[operation.compositionId].states, operation.objectId)) throw new Error('編集対象の状態が見つかりません。');
+      const path = [...base, 'compositions', operation.compositionId, 'states', operation.objectId];
+      for (const property of ['x', 'y', 'width', 'height', 'rotation']) guard([...path, property]);
+      changes.push({ path: [...path, 'path'], value: operation.path });
     } else if (operation.action === 'setCompositionDuration') {
-      guardComposition(operation.compositionId);
+      targetComposition(operation.compositionId);
       z.number().finite().min(0).max(120000).parse(operation.duration);
       changes.push({ path: [...base, 'compositions', operation.compositionId, 'duration'], value: operation.duration });
     } else {
-      guardComposition(operation.compositionId);
+      targetComposition(operation.compositionId);
       for (const key of ['x', 'y', 'width', 'height', 'fill', 'text', 'fontSize'] as const) validateStateValue(key, operation[key], operation.kind);
       const id = newId();
       changes.push({ path: [...base, 'objects', id], value: { id, name: operation.name.trim().slice(0, 100) || operation.kind, kind: operation.kind, order: nextOrder++, locked: false, groupId: null } });
@@ -153,6 +210,11 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
   }
   for (const entry of tracks.values()) {
     validateTrackTiming(entry.value, entry.duration);
+    if (entry.motionPathEdited && entry.value.path !== null) {
+      if (entry.value.type !== 'move') throw new Error('移動経路を使うアニメーションは Move にしてください。');
+      const transition = scene.transitions[entry.path[3]];
+      if (![transition.fromId, transition.toId].every(id => finalStateValue(id, entry.value.objectId, 'visible') === true)) throw new Error('移動経路には両方の Composition に表示されるオブジェクトが必要です。');
+    }
     if (!entry.existing) changes.push({ path: entry.path, value: entry.value });
   }
   const precondition = (path: string[]): ProposalGuard => {

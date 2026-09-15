@@ -5,6 +5,7 @@ import { applyChanges, changesFor, getShared, LOCAL_ORIGIN, readProject, toShare
 import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { validateProposalForApply, type EditProposal } from '../../shared/ai';
+import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
 
 export interface Peer {
   clientId: number;
@@ -131,6 +132,8 @@ export class EditorStore {
     const id = newId('comp'); const transitionId = newId('transition');
     this.undoManager.stopCapturing();
     this.doc.transact(() => {
+      const source = last ? getShared(this.doc, ['scenes', sceneId, 'compositions', last.id]) : null;
+      if (source instanceof Y.Map && source.get('deleted') === true) source.set('deleted', false);
       applyChanges(this.doc, [{ path: ['scenes', sceneId, 'compositions', id], value: { id, name: `Composition ${scene.compositionOrder.length + 1}`, duration: 1000, accent: COLORS[scene.compositionOrder.length % COLORS.length], states: structuredClone(last?.states || {}) } },
         ...(last ? [{ path: ['scenes', sceneId, 'transitions', transitionId], value: { id: transitionId, fromId: last.id, toId: id, duration: 800, tracks: {} } }] : [])]);
       (getShared(this.doc, ['scenes', sceneId, 'compositionOrder']) as Y.Array<string>).push([id]);
@@ -160,6 +163,7 @@ export class EditorStore {
 
   linkedIds(sceneId: string, selected: string[]) {
     const scene = this.scene(sceneId);
+    selected = selected.filter(id => scene.objects[id] && !scene.objects[id].locked);
     const groups = new Set(selected.map(id => scene.objects[id]?.groupId).filter(Boolean));
     return Object.values(scene.objects).filter(object => !object.locked && (selected.includes(object.id) || (object.groupId && groups.has(object.groupId)))).map(o => o.id);
   }
@@ -173,10 +177,14 @@ export class EditorStore {
   hide(sceneId: string, compositionId: string, ids: string[]) { const scene = this.scene(sceneId); this.edit(ids.filter(id => scene.objects[id] && !scene.objects[id].locked && !!scene.compositions[compositionId]?.states[id]).flatMap(id => changesFor(['scenes', sceneId, 'compositions', compositionId, 'states', id], { visible: false }))); }
 
   duplicate(sceneId: string, compositionId: string, ids: string[]) {
-    const scene = this.scene(sceneId); const created: string[] = [];
-    this.undoManager.stopCapturing();
-    this.doc.transact(() => { for (const id of ids) { const object = scene.objects[id]; const state = scene.compositions[compositionId]?.states[id]; if (object && !object.locked && state) created.push(this.addObject(sceneId, compositionId, object.kind, { ...state, x: state.x + 24, y: state.y + 24 })); } }, LOCAL_ORIGIN);
-    this.undoManager.stopCapturing(); return created;
+    const scene = this.scene(sceneId);
+    return this.paste(sceneId, compositionId, copyObjects(scene, compositionId, ids.filter(id => !scene.objects[id]?.locked)));
+  }
+
+  paste(sceneId: string, compositionId: string, clipboard: ObjectClipboard, offset = 24) {
+    const { ids, changes } = pasteObjectChanges(this.scene(sceneId), compositionId, clipboard, offset);
+    this.edit(changes);
+    return ids;
   }
 
   applyProposal(proposal: EditProposal) {

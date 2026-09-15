@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useEditor } from '../editor/context';
 import { CORNER_SIGNS, resizeFromCorner, rotationFromPointer, worldToLocal, type Point, type ResizeCorner } from '../editor/geometry';
 import type { Frame } from '../engine/evaluate';
 import { defaultState, type ObjectKind, type ObjectState } from '../../shared/model';
 import { cn } from './utils';
+import { CanvasFrame, type CanvasPresentation } from './CanvasFrame';
 
 interface Gesture {
   pointer: number;
@@ -24,13 +25,14 @@ interface Gesture {
 
 export function Stage({ frame, compositionId, interactive = true, stateEditing = true, prefix = 'main', zoom = 1 }: { frame: Frame; compositionId: string; interactive?: boolean; stateEditing?: boolean; prefix?: string; zoom?: number }) {
   const editor = useEditor();
-  const { scene, store, selectedIds, renderer, tool } = editor;
+  const { scene, store, selectedIds, renderer, tool, createFramePainter } = editor;
   const container = useRef<HTMLDivElement>(null);
   const surface = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const cursorTime = useRef(0);
   const [size, setSize] = useState({ width: 800, height: 450 });
   const [drawPreview, setDrawPreview] = useState<ObjectState | null>(null);
+  const [painted, setPainted] = useState<CanvasPresentation | null>(null);
   useEffect(() => {
     const node = container.current; if (!node) return;
     const observer = new ResizeObserver(([entry]) => { const scale = Math.min(entry.contentRect.width / frame.width, entry.contentRect.height / frame.height) * zoom; setSize({ width: frame.width * scale, height: frame.height * scale }); });
@@ -150,18 +152,23 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
   }
 
   const scale = frame.width / Math.max(1, size.width);
-  const selection = frame.objects.filter(item => selectedIds.includes(item.object.id) && item.state.visible && item.state.opacity > 0 && item.writeProgress > 0);
-  let drawnFrame = frame;
-  if (drawPreview && gesture.current?.drawing) drawnFrame = { ...frame, objects: [...frame.objects, { object: { id: 'drawing-preview', kind: gesture.current.drawing, name: '', groupId: null, locked: false, order: 999 }, state: drawPreview, writeProgress: 1, order: 'together' }] };
+  const drawingKind = gesture.current?.drawing;
+  const drawnFrame = useMemo<Frame>(() => drawPreview && drawingKind ? { ...frame, objects: [...frame.objects, { object: { id: 'drawing-preview', kind: drawingKind, name: '', groupId: null, locked: false, order: 999 }, state: drawPreview, writeProgress: 1, order: 'together' }] } : frame, [frame, drawPreview, drawingKind]);
+  const presentationKey = `${scene.id}:${compositionId}:${prefix}:${frame.width}:${frame.height}:${interactive}:${stateEditing}:${drawingKind || 'idle'}`;
+  const canvasVisible = !!createFramePainter && painted?.key === presentationKey && painted.width === size.width && painted.height === size.height;
+  const displayedFrame = canvasVisible ? painted!.frame : drawnFrame;
+  const selection = displayedFrame.objects.filter(item => selectedIds.includes(item.object.id) && item.state.visible && item.state.opacity > 0 && item.writeProgress > 0);
   return <div className="stage-container" ref={container}><div ref={surface} className={cn('stage-surface', tool !== 'select' && canEdit && stateEditing && 'drawing')} style={{ width: size.width, height: size.height }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => finish(true)} onLostPointerCapture={() => finish(true)} onPointerLeave={() => { if (!gesture.current) store.presence({ cursor: null }); }} data-testid={`stage-${prefix}`}>
-    <div className="scene-svg" dangerouslySetInnerHTML={{ __html: renderer.frameToSvg(drawnFrame, { idPrefix: prefix }) }} />
+    {createFramePainter && <CanvasFrame frame={drawnFrame} scene={scene} renderer={renderer} createFramePainter={createFramePainter} presentationKey={presentationKey} width={size.width} height={size.height} visible={canvasVisible} onPresent={setPainted} />}
+    <div className={cn('scene-svg', canvasVisible && 'scene-hit-svg')} dangerouslySetInnerHTML={{ __html: renderer.frameToSvg(displayedFrame, { idPrefix: prefix }) }} />
     <svg className="stage-overlay" viewBox={`0 0 ${frame.width} ${frame.height}`} aria-hidden="true">
       {canEdit && selection.map(item => {
         const b = renderer.objectBounds(item);
-        const editable = stateEditing && !item.object.locked && selectedIds.length === 1 && tool === 'select';
+        const locked = !!scene.objects[item.object.id]?.locked;
+        const editable = stateEditing && !locked && selectedIds.length === 1 && tool === 'select';
         const resizable = editable && ['circle', 'rectangle', 'text', 'equation'].includes(item.object.kind);
         return <g key={item.object.id} transform={`rotate(${item.state.rotation} ${item.state.x} ${item.state.y})`}>
-          <rect x={b.x} y={b.y} width={Math.max(1, b.width)} height={Math.max(1, b.height)} fill="none" stroke={item.object.locked ? '#7e7e87' : '#9696eb'} strokeWidth={scale} />
+          <rect x={b.x} y={b.y} width={Math.max(1, b.width)} height={Math.max(1, b.height)} fill="none" stroke={locked ? '#7e7e87' : '#9696eb'} strokeWidth={scale} />
           {resizable && (Object.entries(CORNER_SIGNS) as [ResizeCorner, Point][]).map(([corner, sign]) => {
             const x = b.x + (sign.x + 1) * b.width / 2, y = b.y + (sign.y + 1) * b.height / 2;
             return <g key={corner} data-transform-handle={corner} style={{ pointerEvents: 'all', cursor: corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize' }}><rect x={x-8*scale} y={y-8*scale} width={16*scale} height={16*scale} fill="transparent"/><rect x={x-3*scale} y={y-3*scale} width={6*scale} height={6*scale} fill="#181820" stroke="#a9a7fb" strokeWidth={scale}/></g>;

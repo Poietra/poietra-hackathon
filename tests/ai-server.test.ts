@@ -39,3 +39,27 @@ test.each([
   parse.mockResolvedValue(response);
   await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow(message);
 });
+
+test('Responses schema exposes absolute motion paths and relative shape paths without changing SDK use', async () => {
+  const path = { c1: { x: 500, y: 100 }, c2: { x: 750, y: 100 } };
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '円だけを上に弧を描いて移動させます。', operations: [{ action: 'setMotionPath', transitionId: 'transition-1', objectId: 'circle', path }] } });
+  const proposal = await createEditProposal(doc, { ...input, compositionId: 'comp-2', transitionId: 'transition-1', prompt: '円を上に弧を描いて動かして' }, 'test-key-never-sent', 'test-model');
+  expect(proposal.changes).toHaveLength(1);
+  expect(proposal.changes[0]).toMatchObject({ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'path'], value: path });
+  const body = parse.mock.calls[0][0];
+  const schema = JSON.stringify(body.text.format.schema);
+  expect(schema).toContain('setMotionPath'); expect(schema).toContain('setShapePath');
+  expect(body.input[0].content).toContain('absolute Scene pixels');
+  expect(body.input[0].content).toContain('relative to its start');
+});
+
+test('rejects the entire model response if it also edits a different object or timeline', async () => {
+  const operations = [
+    { action: 'setMotionPath', transitionId: 'transition-1', objectId: 'circle', path: null },
+    { action: 'setShapePath', compositionId: 'comp-1', objectId: 'sigmoid', path: { c1: { x: 20, y: 10 }, c2: { x: 40, y: 30 } } },
+  ];
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '変更案', operations } });
+  await expect(createEditProposal(doc, { ...input, transitionId: 'transition-1' }, 'test-key-never-sent', 'test-model')).rejects.toThrow('選択外のオブジェクト');
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '変更案', operations: operations.slice(0, 1) } });
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model')).rejects.toThrow('Transition');
+});

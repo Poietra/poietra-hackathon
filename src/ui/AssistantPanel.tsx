@@ -100,10 +100,20 @@ export function AssistantPanel() {
     editor.select(scope.selection); editor.setSelectedIds(scope.selectedIds); setError('');
   }
 
+  const selectedTransition = editor.selection.kind === 'transition' ? editor.scene.transitions[editor.selection.id] : null;
+  const canSuggestMotion = selectedTransition && editor.selectedIds.length > 0 && editor.selectedIds.every(id => editor.scene.compositions[selectedTransition.fromId]?.states[id]?.visible && editor.scene.compositions[selectedTransition.toId]?.states[id]?.visible);
+  const suggestions = canSuggestMotion
+    ? ['選択した図形を上に弧を描いて動かして', '動きの開始を 100ms 遅らせて', '動き始めと終わりをなめらかにして']
+    : editor.selectedIds.length === 1 && editor.scene.objects[editor.selectedIds[0]]?.kind === 'path' && !selectedTransition
+      ? ['この曲線を上に大きく曲げて', 'この曲線を黄色にして', '線を少し太くして']
+      : selectedTransition
+        ? ['登場を 200ms 早めて', '動きの開始を 100ms 遅らせて', '動き始めと終わりをなめらかにして']
+        : ['円をもう少し大きくして、黄色にして', '図形を中央に揃えて', '短い見出しのテキストを追加して'];
+
   return <div className="assistant-panel">
     <div className="assistant-heading"><span className="assistant-icon"><Sparkles size={18}/></span><div><h2>Make it move.</h2><p>あなたの意図を、ひとつずつ。</p></div></div>
     <div className="assistant-messages" role="log" aria-label="AI との編集履歴" aria-live="polite">
-      {messages.length === 0 && <div className="assistant-welcome"><p>配置も、色も、動きのタイミングも。<br/>作りたい表現を話しかけてください。</p><div className="prompt-suggestions">{['円をもう少し大きくして、黄色にして','数式の登場を 200ms 早めて','図形を中央に揃えて'].map(text => <button key={text} onClick={() => setPrompt(text)}><span>{text}</span><ChevronRight size={13}/></button>)}</div><small>変更内容を確認してから適用できます。</small></div>}
+      {messages.length === 0 && <div className="assistant-welcome"><p>配置も、色も、動きのタイミングも。<br/>作りたい表現を話しかけてください。</p><div className="prompt-suggestions">{suggestions.map(text => <button key={text} onClick={() => setPrompt(text)}><span>{text}</span><ChevronRight size={13}/></button>)}</div><small>変更内容を確認してから適用できます。</small></div>}
       {messages.map(message => <div key={message.id} className={`chat-message ${message.role}`}>
         <div className="chat-author">{message.role === 'user' ? 'You' : <><Sparkles size={12}/>Poietra</>}</div>
         {message.scope && <small className="muted">{message.scope.label}</small>}<p>{message.content}</p>

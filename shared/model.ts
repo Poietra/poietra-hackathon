@@ -37,6 +37,9 @@ export interface Composition {
   duration: number;
   accent: string;
   states: Record<string, ObjectState>;
+  /** Internal CRDT metadata; readProject omits these from the editable/saved view. */
+  deleted?: boolean;
+  incomingTransitionId?: string;
 }
 
 export interface AnimationTrack {

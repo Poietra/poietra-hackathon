@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import type { Project } from './model';
+import { projectStructureView } from './structure-view';
 
 export type Path = (string | number)[];
 export type Change = { path: string[]; value: unknown };
@@ -23,7 +24,7 @@ export function initializeDocument(doc: Y.Doc, project: Project) {
 
 export function readProject(doc: Y.Doc): Project | null {
   const root = doc.getMap('project');
-  return root.has('version') ? root.toJSON() as Project : null;
+  return root.has('version') ? projectStructureView(root.toJSON() as Project) : null;
 }
 
 export function getShared(doc: Y.Doc, path: string[]): unknown {

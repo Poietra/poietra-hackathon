@@ -7,6 +7,7 @@ import { EditorStore } from './editor/store';
 import { compositionFrame, evaluateScene, transitionFrame } from './engine/evaluate';
 import type { MotionKernel } from './engine/kernel';
 import type { ExportCapabilities, ExporterContract, ExportResult, RendererContract } from './engine/render-contract';
+import type { PainterContract } from './engine/painter-contract';
 import { clamp, ms, sceneDuration, sceneSegments, type Selection } from '../shared/model';
 import { Sidebar } from './ui/Sidebar';
 import { Inspector } from './ui/Inspector';
@@ -16,8 +17,9 @@ import { AssistantPanel } from './ui/AssistantPanel';
 import { ProjectDialog } from './ui/ProjectDialog';
 import { IconButton, Modal } from './ui/components';
 import { download } from './ui/utils';
+import { copyObjects, parseObjects, serializeObjects, OBJECT_CLIPBOARD_MIME } from '../shared/clipboard';
 
-export function App({ store, kernel, renderer, exporter }: { store: EditorStore; kernel: MotionKernel; renderer: RendererContract; exporter: ExporterContract | null }) {
+export function App({ store, kernel, renderer, exporter, createFramePainter }: { store: EditorStore; kernel: MotionKernel; renderer: RendererContract; exporter: ExporterContract | null; createFramePainter?: PainterContract['createFramePainter'] }) {
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot);
   const [sceneId, setSceneId] = useState('scene-1');
   const [requestedSelection, setRequestedSelection] = useState<Selection>({ kind: 'composition', id: 'comp-1' });
@@ -32,6 +34,9 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
   const [renderRevision, setRenderRevision] = useState(0); const [renderError, setRenderError] = useState('');
   const renderReady = renderRevision > 0;
   const playStart = useRef({ time: 0, position: 0, end: 0 });
+  const pasteInPlace = useRef(false);
+  const lastPaste = useRef({ text: '', count: 0, target: '' });
+  const nudge = useRef<string | null>(null);
   const project = snapshot.project;
   const scene = project?.scenes[sceneId] ?? (project ? project.scenes[project.sceneOrder[0]] : null);
   const selection = scene && ((requestedSelection.kind === 'composition' && scene.compositions[requestedSelection.id]) || (requestedSelection.kind === 'transition' && scene.transitions[requestedSelection.id])) ? requestedSelection : { kind: 'composition' as const, id: scene?.compositionOrder[0] || '' };
@@ -44,10 +49,11 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
   const localTime = transition ? clamp(playhead - (selectedSegment?.start || 0), 0, transition.duration) : 0;
 
   function notify(message: string) { if (toastTimer.current) clearTimeout(toastTimer.current); setToast(message); toastTimer.current = setTimeout(() => setToast(''), 4000); }
-  function select(next: Selection) { setPlaying(false); setTransportView(false); setRequestedSelection(next); setPathEditing(false); setPlayhead(segments.find(part => part.id === next.id)?.start || 0); }
+  function select(next: Selection) { setPlaying(false); setTransportView(false); setRequestedSelection(next); setPathEditing(false); setPlayhead(scene ? sceneSegments(store.scene(scene.id)).find(part => part.id === next.id)?.start || 0 : 0); }
   function changeScene(id: string) { setSceneId(id); setPlaying(false); setTransportView(false); setPlayhead(0); setSelectedIds([]); setPathEditing(false); const next = store.project().scenes[id]; if (next) setRequestedSelection({ kind: 'composition', id: next.compositionOrder[0] }); }
   function newScene() { const id = store.addScene(); changeScene(id); }
   function activateTool(value: Tool) { setTool(value); setPlaying(false); setTransportView(false); if (transition) select({ kind: 'composition', id: transition.toId }); }
+  function finishNudge() { if (nudge.current !== null) { nudge.current = null; store.endGesture(); } }
   function seek(time: number) { setPlaying(false); setTransportView(!transition); setPlayhead(clamp(time, 0, total)); }
   function play(scope: 'scene'|'transition' = 'scene') {
     if (playing) { setPlaying(false); return; }
@@ -70,14 +76,38 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
   }, [playing]);
   useEffect(() => { if (scene) store.presence({ sceneId: scene.id, compositionId, selectedIds: activeIds }); }, [scene?.id, compositionId, activeIds.join(','), store]);
   useEffect(() => {
+    function released(event: KeyboardEvent) { if (event.key.startsWith('Arrow')) finishNudge(); }
+    window.addEventListener('keyup', released); window.addEventListener('blur', finishNudge); window.addEventListener('pointerdown', finishNudge, true);
+    return () => { window.removeEventListener('keyup', released); window.removeEventListener('blur', finishNudge); window.removeEventListener('pointerdown', finishNudge, true); finishNudge(); };
+  }, [store]);
+  useEffect(() => { finishNudge(); }, [scene?.id, compositionId, activeIds.join(',')]);
+  useEffect(() => {
     function key(event: KeyboardEvent) {
       const element = event.target as HTMLElement;
-      if (element.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
+      if (element.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="menuitem"]')) return;
+      if (window.getSelection()?.toString()) return;
+      if (!event.key.startsWith('Arrow')) finishNudge();
       if (event.metaKey || event.ctrlKey) {
+        if (event.key.toLowerCase() === 'v') pasteInPlace.current = event.shiftKey;
         if (event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? store.redo() : store.undo(); }
         if (event.key.toLowerCase() === 'd' && scene && activeIds.length) { event.preventDefault(); setSelectedIds(store.duplicate(scene.id, compositionId, activeIds)); }
         if (event.key.toLowerCase() === 'a' && scene) { event.preventDefault(); setSelectedIds(Object.keys(scene.objects).filter(id => scene.compositions[compositionId]?.states[id]?.visible)); }
         if (event.key.toLowerCase() === 'g' && scene && activeIds.length) { event.preventDefault(); event.shiftKey ? store.unlink(scene.id, activeIds) : store.link(scene.id, activeIds); }
+        return;
+      }
+      const directions: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      if (directions[event.key] && scene && activeIds.length) {
+        event.preventDefault();
+        const current = store.scene(scene.id);
+        const ids = store.linkedIds(scene.id, activeIds).filter(id => current.compositions[compositionId]?.states[id]?.visible);
+        if (!ids.length) return;
+        const target = `${scene.id}/${compositionId}/${ids.join(',')}`;
+        if (nudge.current !== target) { finishNudge(); store.beginGesture(); nudge.current = target; }
+        const starts = Object.fromEntries(ids.map(id => { const state = current.compositions[compositionId].states[id]; return [id, { x: state.x, y: state.y }]; }));
+        const [dx, dy] = directions[event.key]; const step = event.shiftKey ? 10 : 1;
+        store.translate(scene.id, compositionId, starts, dx * step, dy * step);
+        setPlaying(false); setTransportView(false); setTool('select');
+        if (transition) select({ kind: 'composition', id: compositionId });
         return;
       }
       if (event.code === 'Space') { event.preventDefault(); play(transition ? 'transition' : 'scene'); }
@@ -89,12 +119,49 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   });
 
+  useEffect(() => {
+    const textTarget = (target: EventTarget | null) => target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="menuitem"]');
+    function copy(event: ClipboardEvent) {
+      if (!scene || textTarget(event.target) || window.getSelection()?.toString() || !activeIds.length || !event.clipboardData) return;
+      const current = store.scene(scene.id);
+      const ids = event.type === 'cut' ? activeIds.filter(id => !current.objects[id]?.locked) : activeIds;
+      const data = copyObjects(current, compositionId, ids);
+      if (!data.objects.length) return;
+      try {
+        const text = serializeObjects(data);
+        event.clipboardData.setData(OBJECT_CLIPBOARD_MIME, text);
+        event.clipboardData.setData('text/plain', text);
+        event.preventDefault(); lastPaste.current = { text: '', count: 0, target: '' };
+        if (event.type === 'cut') { store.hide(scene.id, compositionId, ids); setSelectedIds([]); }
+        notify(`${data.objects.length} 個のオブジェクトを${event.type === 'cut' ? '切り取りました' : 'コピーしました'}`);
+      } catch (error) { event.preventDefault(); notify(error instanceof Error ? error.message : 'コピーできませんでした'); }
+    }
+    function paste(event: ClipboardEvent) {
+      if (!scene || textTarget(event.target) || window.getSelection()?.toString() || !event.clipboardData) return;
+      const text = event.clipboardData.getData(OBJECT_CLIPBOARD_MIME) || event.clipboardData.getData('text/plain');
+      const inPlace = pasteInPlace.current; pasteInPlace.current = false;
+      try {
+        const data = parseObjects(text);
+        if (!data) return;
+        event.preventDefault();
+        const target = `${scene.id}/${compositionId}`;
+        const count = lastPaste.current.text === text && lastPaste.current.target === target ? lastPaste.current.count + 1 : 1;
+        const ids = store.paste(scene.id, compositionId, data, inPlace ? 0 : count * 24);
+        lastPaste.current = { text, count: inPlace ? 0 : count, target };
+        setSelectedIds(ids); setTool('select'); select({ kind: 'composition', id: compositionId });
+        notify(`${ids.length} 個のオブジェクトを貼り付けました`);
+      } catch (error) { event.preventDefault(); notify(error instanceof Error ? error.message : '貼り付けできませんでした'); }
+    }
+    window.addEventListener('copy', copy); window.addEventListener('cut', copy); window.addEventListener('paste', paste);
+    return () => { window.removeEventListener('copy', copy); window.removeEventListener('cut', copy); window.removeEventListener('paste', paste); };
+  });
+
   async function share() { try { await navigator.clipboard.writeText(location.href); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { notify('リンク欄を選択してコピーしてください'); } }
   const participants = [...snapshot.peers].sort((a,b) => a.clientId === store.doc.clientID ? -1 : b.clientId === store.doc.clientID ? 1 : a.clientId-b.clientId);
 
   if (!project || !scene) return <div className="loading-screen"><img src="/poietra.svg" alt="Poietra"/><span>Opening your studio</span><div className="loading-line"/><p>{snapshot.status === 'disconnected' ? '接続を確認しています。サーバーに再接続すると編集を再開できます。' : 'シーンを読み込んでいます'}</p><button className="subtle-button" onClick={() => store.provider.connect()}>再接続</button></div>;
 
-  const context = { store, scene, selection, select, compositionId, selectedIds: activeIds, setSelectedIds, tool, setTool, kernel, renderer, playhead, seek, playing, play, previewScope, pathEditing, setPathEditing, peers: snapshot.peers, notify };
+  const context = { store, scene, selection, select, compositionId, selectedIds: activeIds, setSelectedIds, tool, setTool, kernel, renderer, createFramePainter, playhead, seek, playing, play, previewScope, pathEditing, setPathEditing, peers: snapshot.peers, notify };
   const viewingPlayback = transportView;
   const currentFrame = viewingPlayback ? evaluateScene(scene, playhead, kernel) : compositionFrame(scene, scene.compositions[compositionId]);
   const transitionPreview = transition && (playing && previewScope === 'transition' || localTime > 0) ? transitionFrame(scene, transition, localTime, kernel) : null;
@@ -112,7 +179,7 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
     {toast && <div className="toast" role="status"><Check size={15}/>{toast}</div>}
     <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} project={project}/>
     <Modal open={shareOpen} onOpenChange={setShareOpen} title="A little better, together." description="同じリンクを開けば、このプロジェクトを一緒に編集できます。"><div className="share-link"><input aria-label="共有リンク" readOnly value={location.href} onFocus={e => e.currentTarget.select()}/><button className="primary-button" onClick={share}>{copied?<Check size={14}/>:<Copy size={14}/>}<span>{copied?'Copied':'Copy link'}</span></button></div><div className="share-participants"><h3>In this project <span>{participants.length}</span></h3>{participants.map(peer=><div key={peer.clientId}><span className="avatar" style={{ background:peer.color }}>{peer.name.slice(-2).toUpperCase()}</span><span>{peer.name}</span><small>{peer.clientId===store.doc.clientID?'You':'Editing'}</small></div>)}</div><label className="name-field">表示名<input value={name} onChange={e=>setName(e.target.value)} onBlur={()=>store.setName(name)} maxLength={40}/></label><div className="share-footer"><span><Link2 size={12}/>リンクを知っている人が編集できます</span><button className="text-button" onClick={()=>download(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}),`${project.name}.poietra.json`)}><Download size={13}/>Save project</button></div></Modal>
-    <Modal open={helpOpen} onOpenChange={setHelpOpen} title="An idea. Then, a little motion." description="Composition で場面を作り、Transition でその間の動きを組み立てます。"><div className="help-steps"><div><span>01</span><h3>Shape the moment</h3><p>図形や数式を配置。プロパティから色や大きさを調整します。</p></div><div><span>02</span><h3>Find the movement</h3><p>次の Composition を作り、Transition で個々の動きを重ねます。</p></div><div><span>03</span><h3>Make it yours</h3><p>友人や AI と仕上げて、ひとつの動画に。</p></div></div><div className="keyboard-shortcuts">{[['Space','再生 / 停止'],['V / R / O / P','選択 / 四角 / 円 / パス'],['Shift + click','複数選択'],['⌘ / Ctrl + G','連結'],['⌘ / Ctrl + Z','元に戻す'],['Delete','この場面から非表示']].map(([key,action])=><div key={key}><span>{action}</span><kbd>{key}</kbd></div>)}</div></Modal>
+    <Modal open={helpOpen} onOpenChange={setHelpOpen} title="An idea. Then, a little motion." description="Composition で場面を作り、Transition でその間の動きを組み立てます。"><div className="help-steps"><div><span>01</span><h3>Shape the moment</h3><p>図形や数式を配置。プロパティから色や大きさを調整します。</p></div><div><span>02</span><h3>Find the movement</h3><p>次の Composition を作り、Transition で個々の動きを重ねます。</p></div><div><span>03</span><h3>Make it yours</h3><p>友人や AI と仕上げて、ひとつの動画に。</p></div></div><div className="keyboard-shortcuts">{[['Space','再生 / 停止'],['V / R / O / P','選択 / 四角 / 円 / パス'],['Shift + click','複数選択'],['↑ ↓ ← → / Shift','1 px / 10 px 移動'],['⌘ / Ctrl + C / V','コピー / 貼り付け'],['⌘ / Ctrl + ⇧V','同じ位置に貼り付け'],['⌘ / Ctrl + D','複製'],['⌘ / Ctrl + G','連結'],['⌘ / Ctrl + Z','元に戻す'],['Delete','この場面から非表示']].map(([key,action])=><div key={key}><span>{action}</span><kbd>{key}</kbd></div>)}</div></Modal>
     {exporter && <ExportDialog open={exportOpen} onOpenChange={setExportOpen} exporter={exporter} scene={scene} kernel={kernel} name={project.name}/>} 
   </div></EditorContext.Provider></Tooltip.Provider>;
 }

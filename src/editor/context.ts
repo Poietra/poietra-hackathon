@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import type { ObjectKind, Scene, Selection } from '../../shared/model';
 import type { MotionKernel } from '../engine/kernel';
 import type { RendererContract } from '../engine/render-contract';
+import type { PainterContract } from '../engine/painter-contract';
 import type { EditorStore, Peer } from './store';
 
 export type Tool = 'select' | ObjectKind;
@@ -17,6 +18,7 @@ export interface EditorContextValue {
   setTool: (tool: Tool) => void;
   kernel: MotionKernel;
   renderer: RendererContract;
+  createFramePainter?: PainterContract['createFramePainter'];
   playhead: number;
   seek: (time: number) => void;
   playing: boolean;
