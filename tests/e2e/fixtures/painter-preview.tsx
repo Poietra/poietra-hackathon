@@ -10,14 +10,31 @@ import * as renderer from '../../../src/engine/renderer';
 import { drawSvgFrame } from '../../../src/engine/exporting/rasterize';
 import type { PainterContract } from '../../../src/engine/painter-contract';
 
+const heldRenders = new Set<() => void>();
 const probe = {
   delay: 35, failNext: false, creations: 0, disposals: 0, active: 0, maximumConcurrentPerInstance: 0,
+  svgCalls: 0,
+  hold: false,
+  release() { probe.hold = false; for (const resume of heldRenders) resume(); heldRenders.clear(); },
   renders: [] as { instance: number; x: number | null; finished: boolean; aborted: boolean }[],
   async positions(values: number[]) {
     for (const x of values) {
       store.updateState('scene-1', 'comp-1', 'circle', { x });
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     }
+  },
+  async cursors(count: number) {
+    for (let index = 0; index < count; index++) {
+      store.presence({ cursor: { x: index * 10, y: 100 } });
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    }
+  },
+};
+const observedRenderer = {
+  ...renderer,
+  frameToSvg(...args: Parameters<typeof renderer.frameToSvg>) {
+    probe.svgCalls++;
+    return renderer.frameToSvg(...args);
   },
 };
 const factory: PainterContract['createFramePainter'] = async canvas => {
@@ -31,6 +48,7 @@ const factory: PainterContract['createFramePainter'] = async canvas => {
       probe.maximumConcurrentPerInstance = Math.max(probe.maximumConcurrentPerInstance, activeRenders);
       const width = canvas.width, height = canvas.height;
       try {
+        if (probe.hold) await new Promise<void>(resolve => heldRenders.add(resolve));
         // Deliberately finish the delay after dispose: stale renders must never publish.
         await new Promise(resolve => setTimeout(resolve, probe.delay));
         if (options?.signal?.aborted) { record.aborted = true; throw new DOMException('Canceled', 'AbortError'); }
@@ -46,4 +64,4 @@ const store = new EditorStore(currentRoom());
 const kernel = await loadKernel();
 declare global { interface Window { painterPreview: typeof probe } }
 window.painterPreview = probe;
-createRoot(document.getElementById('root')!).render(<StrictMode><App store={store} kernel={kernel} renderer={renderer} exporter={null} createFramePainter={factory}/></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode><App store={store} kernel={kernel} renderer={observedRenderer} exporter={null} createFramePainter={factory}/></StrictMode>);

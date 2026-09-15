@@ -55,11 +55,17 @@ export class EditorStore {
   private connectionWait: ReturnType<typeof setTimeout> | null = null;
   private localWait: ReturnType<typeof setTimeout> | null = null;
   private localFailed = false;
+  private transactionsRunning = false;
   readonly color = COLORS[this.doc.clientID % COLORS.length];
   userName = localStorage.getItem('poietra-user-name') || `Guest ${String(this.doc.clientID).slice(-3)}`;
 
   constructor(readonly roomId: string) {
     sessionStorage.setItem('poietra-chat-author', this.chatAuthorId);
+    // Public Yjs lifecycle events cover nested edits and transactions queued by
+    // observers. Until the entire batch finishes, read directly from the Doc:
+    // observeDeep may not have published the newest snapshot yet.
+    this.doc.on('beforeAllTransactions', () => { this.transactionsRunning = true; });
+    this.doc.on('afterAllTransactions', () => { this.transactionsRunning = false; });
     this.undoManager = new EditorUndoManager(this.doc);
     this.persistence = new IndexeddbPersistence(`poietra-${roomId}`, this.doc);
     const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/sync`;
@@ -159,7 +165,12 @@ export class EditorStore {
   }
   redo() { const retained = redoPreservingPeerDurations(this.undoManager); this.refresh(); return retained; }
   edit(changes: Change[], separate = true) { if (separate) this.undoManager.stopCapturing(); applyChanges(this.doc, changes); if (separate) this.undoManager.stopCapturing(); }
-  project() { const project = readProject(this.doc); if (!project) throw new Error('Project is loading'); return project; }
+  /** Read-only snapshot; mutations go through edit(), never through this value. */
+  project() {
+    const project = !this.transactionsRunning && this.state?.project || readProject(this.doc);
+    if (!project) throw new Error('Project is loading');
+    return project;
+  }
   scene(sceneId: string) { const scene = this.project().scenes[sceneId]; if (!scene) throw new Error('Scene no longer exists'); return scene; }
 
   setProjectName(name: string) { this.edit([{ path: ['name'], value: name.slice(0, 100) || 'Untitled project' }]); }

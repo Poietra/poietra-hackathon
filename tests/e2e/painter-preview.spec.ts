@@ -7,6 +7,24 @@ async function open(page: Page) {
 }
 const circle = (page: Page, stage = 'main') => page.locator(`[data-testid="stage-${stage}"] .scene-svg [data-object-id="circle"]`);
 
+test('cursor updates keep the unchanged canvas and SVG frame instead of repainting the scene', async ({ page }) => {
+  await open(page);
+  for (const compare of [false, true]) {
+    if (compare) await page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.painterPreview.active)).toBe(0);
+    const counts = await page.evaluate(async () => {
+      const before = { svg: window.painterPreview.svgCalls, paint: window.painterPreview.renders.length };
+      await window.painterPreview.cursors(12);
+      return { svg: window.painterPreview.svgCalls - before.svg, paint: window.painterPreview.renders.length - before.paint };
+    });
+    expect(counts).toEqual({ svg: 0, paint: 0 });
+  }
+  // A real scene change must still invalidate both rendering paths.
+  await page.getByRole('button', { name: 'Composition 1', exact: true }).click();
+  await page.evaluate(() => window.painterPreview.positions([430]));
+  await expect(circle(page)).toHaveAttribute('transform', 'translate(430 520) rotate(0)');
+});
+
 test('the Canvas and transparent SVG preserve selection, resize and Bézier editing', async ({ page }) => {
   await open(page);
   await expect(page.locator('.scene-hit-svg')).toHaveCSS('opacity', '0');
@@ -44,9 +62,10 @@ test('slow painting coalesces pending frames and eventually displays the latest 
 
 test('switching compositions aborts the old painter and cannot publish its old position', async ({ page }) => {
   await open(page);
-  await page.evaluate(async () => { window.painterPreview.delay = 160; await window.painterPreview.positions([390]); });
-  await expect.poll(() => page.evaluate(() => window.painterPreview.active)).toBeGreaterThan(0);
+  await page.evaluate(async () => { window.painterPreview.hold = true; await window.painterPreview.positions([390]); });
+  await expect.poll(() => page.evaluate(() => window.painterPreview.renders.some(item => item.x === 390 && !item.finished))).toBe(true);
   await page.getByRole('button', { name: 'Composition 2', exact: true }).click();
+  await page.evaluate(() => window.painterPreview.release());
   await expect(page.locator('[data-testid="stage-main"] .scene-hit-svg')).toHaveCount(1);
   await expect(circle(page)).toHaveAttribute('transform', 'translate(955 190) rotate(0)');
   const report = await page.evaluate(() => ({ disposals: window.painterPreview.disposals, staleAborted: window.painterPreview.renders.some(item => item.x === 390 && item.aborted), active: window.painterPreview.active }));
