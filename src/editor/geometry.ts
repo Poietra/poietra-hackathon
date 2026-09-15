@@ -1,6 +1,7 @@
 import type { ObjectState } from '../../shared/model';
 
 export interface Point { x: number; y: number }
+export interface Rectangle { x: number; y: number; width: number; height: number }
 export type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
 export const CORNER_SIGNS: Record<ResizeCorner, Point> = {
   nw: { x: -1, y: -1 }, ne: { x: 1, y: -1 }, sw: { x: -1, y: 1 }, se: { x: 1, y: 1 },
@@ -19,6 +20,13 @@ export function worldToLocal(point: Point, state: Pick<ObjectState, 'x' | 'y' | 
 export function localToWorld(point: Point, state: Pick<ObjectState, 'x' | 'y' | 'rotation'>): Point {
   const rotated = rotateVector(point, state.rotation);
   return { x: rotated.x + state.x, y: rotated.y + state.y };
+}
+
+/** Bounds use unrotated Scene coordinates; the pointer arrives in world coordinates. */
+export function pointInRotatedBounds(point: Point, bounds: Rectangle, state: Pick<ObjectState, 'x' | 'y' | 'rotation'>): boolean {
+  const local = worldToLocal(point, state);
+  const left = bounds.x - state.x, top = bounds.y - state.y;
+  return local.x >= left && local.x <= left + bounds.width && local.y >= top && local.y <= top + bounds.height;
 }
 
 /** Resize around the opposite corner, including when the object is rotated. */

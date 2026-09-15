@@ -1,0 +1,12 @@
+/* The hit target stays in the ruler; the line across animation bars remains inert. */
+.transition-tracks .track-ruler { position: sticky; top: 0; z-index: 30; background: #191920; }
+.track-seek-control, .track-seek-track { position: relative; width: 100%; height: 100%; }
+.track-seek-control { cursor: crosshair; touch-action: none; user-select: none; }
+.track-seek-mark { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; pointer-events: none; }
+.track-seek-mark:first-child { transform: none; }
+.track-seek-mark:nth-child(5) { transform: translateX(-100%); }
+.track-seek-thumb { width: 28px; height: 28px; border-radius: 4px; cursor: ew-resize; z-index: 20; }
+.track-seek-thumb::after { content: ''; position: absolute; bottom: 0; left: 9px; width: 10px; height: 7px; background: #aca0c7; clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.track-seek-thumb:hover, .track-seek-thumb[data-dragging] { background: rgb(166 153 195 / .15); }
+.track-seek-thumb:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+.track-seek[data-disabled] .track-seek-control, .track-seek[data-disabled] .track-seek-thumb { cursor: default; }

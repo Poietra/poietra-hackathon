@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { useEditor } from '../editor/context';
-import { CORNER_SIGNS, resizeFromCorner, rotationFromPointer, worldToLocal, type Point, type ResizeCorner } from '../editor/geometry';
+import { CORNER_SIGNS, pointInRotatedBounds, resizeFromCorner, rotationFromPointer, worldToLocal, type Point, type ResizeCorner } from '../editor/geometry';
 import type { Frame } from '../engine/evaluate';
 import { defaultState, type ObjectKind, type ObjectState } from '../../shared/model';
 import { cn } from './utils';
@@ -62,7 +62,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     return () => { window.removeEventListener('keydown', key, true); finish(true); };
   }, [scene.id, compositionId, tool, interactive, stateEditing, editor.playing, store]);
 
-  function point(event: ReactPointerEvent): Point { const rect = surface.current!.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width * frame.width, y: (event.clientY - rect.top) / rect.height * frame.height }; }
+  function point(event: { clientX: number; clientY: number }): Point { const rect = surface.current!.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width * frame.width, y: (event.clientY - rect.top) / rect.height * frame.height }; }
   const transition = editor.selection.kind === 'transition' ? scene.transitions[editor.selection.id] : null;
   const selectedObject = selectedIds.length === 1 ? scene.objects[selectedIds[0]] : null;
   const pathTrack = transition && selectedObject ? transition.tracks[selectedObject.id] : null;
@@ -72,8 +72,33 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
   const canEdit = interactive && !editor.playing;
   const visibleMotionPath = canEdit && editor.pathEditing && pathTrack?.path && from && to;
 
+  function hitObject(at: Point, target: Element): string | undefined {
+    const direct = target.closest('[data-object-id]')?.getAttribute('data-object-id');
+    // Expand text hits into the spaces between glyphs while preserving paint order:
+    // a shape painted in front of that text still wins its normal SVG hit.
+    for (let index = displayedFrame.objects.length - 1; index >= 0; index--) {
+      const item = displayedFrame.objects[index];
+      if (!item.state.visible || item.state.opacity <= 0 || item.writeProgress <= 0) continue;
+      if (item.object.id === direct) return direct!;
+      if ((item.object.kind === 'text' || item.object.kind === 'equation') && pointInRotatedBounds(at, renderer.objectBounds(item), item.state)) return item.object.id;
+    }
+    return undefined;
+  }
+
+  function doubleClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!canEdit || !stateEditing || tool !== 'select') return;
+    const target = event.target as Element;
+    if (target.closest('[data-transform-handle], [data-path-handle]')) return;
+    const id = hitObject(point(event), target), object = id ? scene.objects[id] : undefined;
+    if (!object || object.locked || (object.kind !== 'text' && object.kind !== 'equation')) return;
+    event.preventDefault();
+    editor.requestTextEdit(object.id, compositionId);
+  }
+
   function down(event: ReactPointerEvent<HTMLDivElement>) {
     if (!canEdit || event.button !== 0 || gesture.current) return;
+    // Pointer capture/preventDefault must not leave keyboard focus in the Inspector.
+    event.currentTarget.focus({ preventScroll: true });
     const start = point(event), target = event.target as Element;
     const base: Gesture = { pointer: event.pointerId, sceneId: scene.id, compositionId, start, undoBefore: store.undoManager.undoStack.at(-1) };
     const handle = target.closest('[data-path-handle]')?.getAttribute('data-path-handle') as 'c1' | 'c2' | null;
@@ -93,7 +118,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       gesture.current = { ...base, drawing: tool };
       setDrawPreview(defaultState(tool, { x: start.x, y: start.y, width: 1, height: 1 }));
     } else {
-      const id = target.closest('[data-object-id]')?.getAttribute('data-object-id');
+      const id = hitObject(start, target);
       if (!id || !scene.objects[id]) { editor.setSelectedIds([]); return; }
       const object = scene.objects[id];
       const ids = event.shiftKey ? (selectedIds.includes(id) ? selectedIds.filter(x => x !== id) : [...selectedIds, id]) : selectedIds.includes(id) ? selectedIds : [id];
@@ -116,6 +141,10 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
 
   function move(event: ReactPointerEvent<HTMLDivElement>) {
     const at = point(event);
+    if (!gesture.current && surface.current) {
+      const id = tool === 'select' && canEdit ? hitObject(at, event.target as Element) : undefined;
+      surface.current.style.cursor = id && !scene.objects[id]?.locked ? 'move' : '';
+    }
     if (performance.now() - cursorTime.current > 40) { cursorTime.current = performance.now(); store.presence({ sceneId: scene.id, compositionId, cursor: at }); }
     const current = gesture.current; if (!current || current.pointer !== event.pointerId) return;
     if (current.drawing) { setDrawPreview(preview(current.drawing, current.start, at, event.shiftKey)); return; }
@@ -148,6 +177,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       const state = click ? defaultState(current.drawing, { x: current.start.x, y: current.start.y, ...(current.drawing === 'text' || current.drawing === 'equation' ? { width: 320, height: 80 } : {}) }) : preview(current.drawing, current.start, at, event.shiftKey);
       const id = store.addObject(current.sceneId, current.compositionId, current.drawing, state);
       finish(); editor.setSelectedIds([id]); editor.setTool('select');
+      if (current.drawing === 'text' || current.drawing === 'equation') editor.requestTextEdit(id, current.compositionId);
     } else finish();
   }
 
@@ -158,7 +188,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
   const canvasVisible = !!createFramePainter && painted?.key === presentationKey && painted.width === size.width && painted.height === size.height;
   const displayedFrame = canvasVisible ? painted!.frame : drawnFrame;
   const selection = displayedFrame.objects.filter(item => selectedIds.includes(item.object.id) && item.state.visible && item.state.opacity > 0 && item.writeProgress > 0);
-  return <div className="stage-container" ref={container}><div ref={surface} className={cn('stage-surface', tool !== 'select' && canEdit && stateEditing && 'drawing')} style={{ width: size.width, height: size.height }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => finish(true)} onLostPointerCapture={() => finish(true)} onPointerLeave={() => { if (!gesture.current) store.presence({ cursor: null }); }} data-testid={`stage-${prefix}`}>
+  return <div className="stage-container" ref={container}><div ref={surface} tabIndex={-1} className={cn('stage-surface', tool !== 'select' && canEdit && stateEditing && 'drawing')} style={{ width: size.width, height: size.height }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onDoubleClick={doubleClick} onPointerCancel={() => finish(true)} onLostPointerCapture={() => finish(true)} onPointerLeave={() => { if (!gesture.current) store.presence({ cursor: null }); }} data-testid={`stage-${prefix}`}>
     {createFramePainter && <CanvasFrame frame={drawnFrame} scene={scene} renderer={renderer} createFramePainter={createFramePainter} presentationKey={presentationKey} width={size.width} height={size.height} visible={canvasVisible} onPresent={setPainted} />}
     <div className={cn('scene-svg', canvasVisible && 'scene-hit-svg')} dangerouslySetInnerHTML={{ __html: renderer.frameToSvg(displayedFrame, { idPrefix: prefix }) }} />
     <svg className="stage-overlay" viewBox={`0 0 ${frame.width} ${frame.height}`} aria-hidden="true">
@@ -167,7 +197,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
         const locked = !!scene.objects[item.object.id]?.locked;
         const editable = stateEditing && !locked && selectedIds.length === 1 && tool === 'select';
         const resizable = editable && ['circle', 'rectangle', 'text', 'equation'].includes(item.object.kind);
-        return <g key={item.object.id} transform={`rotate(${item.state.rotation} ${item.state.x} ${item.state.y})`}>
+        return <g key={item.object.id} data-selection-id={item.object.id} transform={`rotate(${item.state.rotation} ${item.state.x} ${item.state.y})`}>
           <rect x={b.x} y={b.y} width={Math.max(1, b.width)} height={Math.max(1, b.height)} fill="none" stroke={locked ? '#7e7e87' : '#9696eb'} strokeWidth={scale} />
           {resizable && (Object.entries(CORNER_SIGNS) as [ResizeCorner, Point][]).map(([corner, sign]) => {
             const x = b.x + (sign.x + 1) * b.width / 2, y = b.y + (sign.y + 1) * b.height / 2;

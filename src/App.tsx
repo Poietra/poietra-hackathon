@@ -29,6 +29,10 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   const [selectedIds, setSelectedIds] = useState<string[]>([]); const [tool, setTool] = useState<Tool>('select');
   const [playhead, setPlayhead] = useState(0); const [playing, setPlaying] = useState(false); const [previewScope, setPreviewScope] = useState<'scene'|'transition'>('scene');
   const [transportView, setTransportView] = useState(false);
+  const [transitionSeeking, setTransitionSeeking] = useState(false);
+  const [textEditRequest, setTextEditRequest] = useState<{ sceneId: string; compositionId: string; objectId: string } | null>(null);
+  const rightPanel = useRef<HTMLElement>(null);
+  const composing = useRef(false);
   const [pathEditing, setPathEditing] = useState(false); const [zoom, setZoom] = useState(1);
   const [rightTab, setRightTab] = useState<'properties'|'assistant'>('properties'); const [shareOpen, setShareOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
@@ -53,7 +57,24 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   const localTime = transition ? clamp(playhead - (selectedSegment?.start || 0), 0, transition.duration) : 0;
 
   function notify(message: string) { if (toastTimer.current) clearTimeout(toastTimer.current); setToast(message); toastTimer.current = setTimeout(() => setToast(''), 4000); }
-  function select(next: Selection) { setPlaying(false); setTransportView(false); setRequestedSelection(next); setPathEditing(false); setPlayhead(scene ? sceneSegments(store.scene(scene.id)).find(part => part.id === next.id)?.start || 0 : 0); }
+  function select(next: Selection) { setPlaying(false); setTransportView(false); setTransitionSeeking(false); setRequestedSelection(next); setPathEditing(false); setPlayhead(scene ? sceneSegments(store.scene(scene.id)).find(part => part.id === next.id)?.start || 0 : 0); }
+  function appendComposition() {
+    if (!scene) return;
+    const current = store.scene(scene.id);
+    const previous = current.compositions[current.compositionOrder.at(-1)!];
+    const id = store.addComposition(scene.id);
+    select({ kind: 'composition', id });
+    notify(`${store.scene(scene.id).compositions[id].name} を追加。${previous?.name || '直前の場面'} の配置と内容を引き継ぎました。`);
+  }
+  function requestTextEdit(objectId: string, targetCompositionId: string) {
+    if (!scene) return;
+    const current = store.scene(scene.id);
+    const object = current.objects[objectId];
+    if (!object || object.locked || !['text', 'equation'].includes(object.kind) || !current.compositions[targetCompositionId]?.states[objectId]?.visible) return;
+    select({ kind: 'composition', id: targetCompositionId });
+    setSelectedIds([objectId]); setTool('select'); setRightTab('properties');
+    setTextEditRequest({ sceneId: current.id, compositionId: targetCompositionId, objectId });
+  }
   function changeScene(id: string) { setSceneId(id); setPlaying(false); setTransportView(false); setPlayhead(0); setSelectedIds([]); setPathEditing(false); const next = store.project().scenes[id]; if (next) setRequestedSelection({ kind: 'composition', id: next.compositionOrder[0] }); }
   function newScene() { try { const id = store.addScene(); changeScene(id); } catch (error) { notify(error instanceof Error ? error.message : 'Scene を追加できませんでした。'); } }
   function editMoment(compositionOnly = false) {
@@ -65,15 +86,39 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   function activateTool(value: Tool) { setTool(value); setPlaying(false); if (transportView) { editMoment(value !== 'select'); return; } setTransportView(false); if (transition) select({ kind: 'composition', id: transition.toId }); }
   function chooseObjects(ids: string[]) { if (transportView) editMoment(); setSelectedIds(ids); }
   function finishNudge() { if (nudge.current !== null) { nudge.current = null; store.endGesture(); } }
-  function seek(time: number, scope: 'scene'|'transition' = transition && !transportView ? 'transition' : 'scene') { setPlaying(false); setTransportView(scope === 'scene'); setPathEditing(false); setPlayhead(clamp(time, 0, total)); }
+  function seek(time: number, scope: 'scene'|'transition' = transition && !transportView ? 'transition' : 'scene') { setPlaying(false); setTransportView(scope === 'scene'); setTransitionSeeking(scope === 'transition'); setPathEditing(false); setPlayhead(clamp(time, 0, total)); }
   function play(scope: 'scene'|'transition' = 'scene') {
     if (playing) { setPlaying(false); return; }
     const begin = scope === 'transition' ? selectedSegment?.start || 0 : 0;
     const end = scope === 'transition' ? begin + (transition?.duration || 0) : total;
     const position = playhead < begin || playhead >= end - 1 ? begin : playhead;
     playStart.current = { time: performance.now(), position, end };
-    setPreviewScope(scope); setTransportView(scope === 'scene'); setPlayhead(position); setPlaying(true);
+    setPreviewScope(scope); setTransportView(scope === 'scene'); setTransitionSeeking(scope === 'transition'); setPlayhead(position); setPlaying(true);
   }
+
+  useEffect(() => {
+    if (!textEditRequest) return;
+    if (scene?.id === textEditRequest.sceneId && selection.kind === 'composition' && compositionId === textEditRequest.compositionId && activeIds.length === 1 && activeIds[0] === textEditRequest.objectId && !transportView && rightTab === 'properties') {
+      const input = rightPanel.current?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Text content"], textarea[aria-label="LaTeX expression"]');
+      input?.focus({ preventScroll: true }); input?.select();
+    }
+    setTextEditRequest(null);
+  }, [textEditRequest, scene?.id, compositionId, activeIds.join(','), transportView, rightTab]);
+  useEffect(() => {
+    const start = () => { composing.current = true; finishNudge(); };
+    const end = () => { composing.current = false; };
+    window.addEventListener('compositionstart', start); window.addEventListener('compositionend', end); window.addEventListener('blur', end);
+    return () => { window.removeEventListener('compositionstart', start); window.removeEventListener('compositionend', end); window.removeEventListener('blur', end); };
+  }, [store]);
+  useEffect(() => {
+    function returnToControls(event: Event) {
+      // Chromium can retain a number input's selected text after it loses focus.
+      // Returning to a button or canvas must restore object clipboard/Undo keys.
+      if (event.target instanceof Element && event.target.closest('button, [role="button"], .stage-surface')) window.getSelection()?.removeAllRanges();
+    }
+    window.addEventListener('pointerdown', returnToControls, true); window.addEventListener('focusin', returnToControls);
+    return () => { window.removeEventListener('pointerdown', returnToControls, true); window.removeEventListener('focusin', returnToControls); };
+  }, []);
 
   useEffect(() => {
     if (!scene) return; let current = true;
@@ -101,7 +146,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   useEffect(() => { finishNudge(); }, [scene?.id, compositionId, activeIds.join(',')]);
   useEffect(() => {
     function key(event: KeyboardEvent) {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || event.isComposing || composing.current || event.keyCode === 229) return;
       const element = event.target as HTMLElement;
       if (element.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="menuitem"]')) return;
       if (window.getSelection()?.toString()) return;
@@ -137,7 +182,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
       }
       if (event.code === 'Space') { event.preventDefault(); play(transportView ? 'scene' : transition ? 'transition' : 'scene'); }
       if (event.key === 'Escape') { setSelectedIds([]); setTool('select'); setPlaying(false); setPathEditing(false); }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && scene && activeIds.length) { event.preventDefault(); store.hide(scene.id, compositionId, activeIds); setSelectedIds([]); }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && scene && activeIds.length) { event.preventDefault(); const ids = activeIds.filter(id => !scene.objects[id].locked && scene.compositions[compositionId]?.states[id]?.visible); if (ids.length) { store.hide(scene.id, compositionId, ids); setSelectedIds(activeIds.filter(id => !ids.includes(id))); notify(`${ids.length} 個を ${scene.compositions[compositionId].name} から非表示にしました。ほかの場面には残ります。`); } }
       const tools: Record<string, Tool> = { v: 'select', r: 'rectangle', o: 'circle', t: 'text', e: 'equation', p: 'path', l: 'arrow' };
       if (tools[event.key.toLowerCase()]) activateTool(tools[event.key.toLowerCase()]);
     }
@@ -147,7 +192,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   useEffect(() => {
     const textTarget = (target: EventTarget | null) => target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"], [role="menuitem"]');
     function copy(event: ClipboardEvent) {
-      if (!scene || textTarget(event.target) || window.getSelection()?.toString() || !activeIds.length || !event.clipboardData) return;
+      if (!scene || composing.current || textTarget(event.target) || window.getSelection()?.toString() || !activeIds.length || !event.clipboardData) return;
       if (transportView) { event.preventDefault(); notify('編集する場面を開いてからコピーしてください。'); return; }
       const current = store.scene(scene.id);
       const ids = event.type === 'cut' ? activeIds.filter(id => !current.objects[id]?.locked) : activeIds;
@@ -163,7 +208,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
       } catch (error) { event.preventDefault(); notify(error instanceof Error ? error.message : 'コピーできませんでした'); }
     }
     function paste(event: ClipboardEvent) {
-      if (!scene || textTarget(event.target) || window.getSelection()?.toString() || !event.clipboardData) return;
+      if (!scene || composing.current || textTarget(event.target) || window.getSelection()?.toString() || !event.clipboardData) return;
       const text = event.clipboardData.getData(OBJECT_CLIPBOARD_MIME) || event.clipboardData.getData('text/plain');
       const inPlace = pasteInPlace.current; pasteInPlace.current = false;
       try {
@@ -188,10 +233,10 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
 
   if (!project || !scene) return <div className="loading-screen"><img src="/poietra.svg" alt="Poietra"/><span>Opening your studio</span><div className="loading-line"/><ConnectionStatus snapshot={snapshot} onRetry={store.retryConnection} expanded/></div>;
 
-  const context = { store, scene, selection, select, compositionId, selectedIds: activeIds, setSelectedIds: chooseObjects, tool, setTool, kernel, renderer, createFramePainter, playhead, seek, playing, play, previewScope, viewingPlayback: transportView, pathEditing, setPathEditing, peers: snapshot.peers, notify };
+  const context = { store, scene, selection, select, appendComposition, requestTextEdit, compositionId, selectedIds: activeIds, setSelectedIds: chooseObjects, tool, setTool, kernel, renderer, createFramePainter, playhead, seek, playing, play, previewScope, viewingPlayback: transportView, pathEditing, setPathEditing, peers: snapshot.peers, notify };
   const viewingPlayback = transportView;
   const currentFrame = viewingPlayback ? evaluateScene(scene, playhead, kernel) : compositionFrame(scene, scene.compositions[compositionId]);
-  const transitionPreview = transition && (playing && previewScope === 'transition' || localTime > 0) ? transitionFrame(scene, transition, localTime, kernel) : null;
+  const transitionPreview = transition && (transitionSeeking || playing && previewScope === 'transition' || localTime > 0) ? transitionFrame(scene, transition, localTime, kernel) : null;
 
   return <Tooltip.Provider delay={450}><EditorContext.Provider value={context}><div className="studio" data-engine="wasm">
     <nav className="app-rail" aria-label="メインナビゲーション"><button className="brand" aria-label="Poietra の使い方" onClick={() => setHelpOpen(true)}><img src="/poietra.svg" alt=""/></button><div className="rail-actions"><IconButton label="Editor" active={rightTab === 'properties'} onClick={() => setRightTab('properties')}><BookOpen size={21}/></IconButton><IconButton label="AI assistant" active={rightTab === 'assistant'} onClick={() => setRightTab('assistant')}><Sparkles size={21}/></IconButton></div><div className="rail-bottom"><IconButton label="キーボードショートカット" onClick={() => setHelpOpen(true)}><Keyboard size={17}/></IconButton><button className="avatar own-avatar" style={{ background: store.color }} aria-label="プロフィールと共有" onClick={() => setShareOpen(true)}>{store.userName.startsWith('Guest ') ? store.userName.slice(-2) : store.userName.slice(0,2).toUpperCase()}</button></div></nav>
@@ -202,7 +247,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
       <div className="workspace-heading"><div className="workspace-breadcrumb">{transition && !viewingPlayback ? <><span>{scene.compositions[transition.fromId]?.name}</span><ArrowRight size={17}/><span>{scene.compositions[transition.toId]?.name}</span></> : <><span>{viewingPlayback ? scene.name : scene.compositions[compositionId]?.name}</span><span className="muted workspace-subtitle">{viewingPlayback ? 'Preview' : 'Composition'}</span></>}</div>{transition && !viewingPlayback ? <button className={`subtle-button preview-button ${playing ? 'active' : ''}`} onClick={() => play('transition')}>{playing ? <Pause size={13} fill="currentColor"/> : <Play size={13} fill="currentColor"/>}Preview</button> : <span className="workspace-dimensions">{scene.width} × {scene.height}</span>}</div>
       {renderError ? <div className="render-error" role="alert">{renderError}</div> : !renderReady ? <div className="canvas-loading"><LoaderCircle size={20} className="loading-spinner"/></div> : transition && !viewingPlayback ? <><div className="compare-stages"><div className="compare-column"><div className="compare-label"><span>From</span>{scene.compositions[transition.fromId]?.name}</div><Stage frame={compositionFrame(scene, scene.compositions[transition.fromId])} compositionId={transition.fromId} interactive={false} prefix="from"/><div className="compare-caption">{activeIds.length === 1 ? scene.objects[activeIds[0]]?.name : 'Start state'}<span><ArrowRight size={12}/>{activeIds.length === 1 && !scene.compositions[transition.fromId].states[activeIds[0]]?.visible ? 'Enter' : 'Transition'}</span></div></div><div className="compare-column"><div className="compare-label"><span>To</span>{scene.compositions[transition.toId]?.name}</div><Stage frame={transitionPreview || compositionFrame(scene, scene.compositions[transition.toId])} compositionId={transition.toId} stateEditing={!transitionPreview} prefix="to"/><div className="compare-caption">{activeIds.length === 1 ? scene.objects[activeIds[0]]?.name : 'End state'}<span>{activeIds.length === 1 ? ANIMATION_LABEL(transition.tracks[activeIds[0]]?.type) : 'Composition'}</span></div></div></div><div className="preview-transport"><IconButton label={playing ? 'プレビューを停止' : 'Transition をプレビュー'} onClick={() => play('transition')}>{playing ? <Pause size={14} fill="currentColor"/> : <Play size={14} fill="currentColor"/>}</IconButton><span>{ms(localTime)} / {ms(transition.duration)} ms</span><input aria-label="Transition preview position" type="range" min={0} max={transition.duration} value={localTime} step={1} onChange={e => seek((selectedSegment?.start || 0) + Number(e.target.value), 'transition')}/></div></> : <div className="main-stage-area"><Stage frame={currentFrame} compositionId={compositionId} interactive={!viewingPlayback} zoom={zoom}/><div className="floating-tools">{([[MousePointer2,'select','選択 (V)'],[Square,'rectangle','四角形 (R)'],[Circle,'circle','円 (O)'],[Spline,'path','ベジェ曲線 (P)'],[Sigma,'equation','数式 (E)'],[Type,'text','テキスト (T)'],[ArrowUpRight,'arrow','矢印 (L)'],[Minus,'numberline','数直線']] as const).map(([Icon,value,label]) => <IconButton key={value} label={label} active={tool===value} onClick={() => activateTool(value)}><Icon size={18} strokeWidth={1.5}/></IconButton>)}<div className="tool-divider"/><IconButton label="AI assistant" active={rightTab==='assistant'} onClick={() => setRightTab(rightTab==='assistant'?'properties':'assistant')}><Sparkles size={19}/></IconButton></div>{tool !== 'select' && <div className="tool-instruction">キャンバスをクリック、またはドラッグして追加<span>Esc でキャンセル</span></div>}</div>}
     </div><Timeline zoom={zoom} setZoom={setZoom}/></main>
-    <aside className="right-panel"><div className="inspector-tabs"><button className={rightTab==='properties'?'selected':''} onClick={() => setRightTab('properties')}><SlidersHorizontal size={13}/>Design</button><button className={rightTab==='assistant'?'selected':''} onClick={() => setRightTab('assistant')}><Sparkles size={13}/>Assistant</button></div>{viewingPlayback ? <PlaybackPanel scene={scene} segment={playbackSegment} playhead={playhead} onEdit={() => editMoment()}/> : rightTab==='properties' && <Inspector/>}<div className="assistant-tab-content" hidden={viewingPlayback || rightTab!=='assistant'}><AssistantPanel/></div></aside>
+    <aside ref={rightPanel} className="right-panel"><div className="inspector-tabs"><button className={rightTab==='properties'?'selected':''} onClick={() => setRightTab('properties')}><SlidersHorizontal size={13}/>Design</button><button className={rightTab==='assistant'?'selected':''} onClick={() => setRightTab('assistant')}><Sparkles size={13}/>Assistant</button></div>{viewingPlayback ? <PlaybackPanel scene={scene} segment={playbackSegment} playhead={playhead} onEdit={() => editMoment()}/> : rightTab==='properties' && <Inspector/>}<div className="assistant-tab-content" hidden={viewingPlayback || rightTab!=='assistant'}><AssistantPanel/></div></aside>
     {toast && <div className="toast" role="status"><Check size={15}/>{toast}</div>}
     <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} project={project}/>
     <Modal open={shareOpen} onOpenChange={setShareOpen} title="A little better, together." description="同じリンクを開けば、このプロジェクトを一緒に編集できます。"><div className="share-link"><input aria-label="共有リンク" readOnly value={location.href} onFocus={e => e.currentTarget.select()}/><button className="primary-button" onClick={share}>{copied?<Check size={14}/>:<Copy size={14}/>}<span>{copied?'Copied':'Copy link'}</span></button></div><div className="share-participants"><h3>In this project <span>{participants.length}</span></h3>{participants.map(peer=><div key={peer.clientId}><span className="avatar" style={{ background:peer.color }}>{peer.name.slice(-2).toUpperCase()}</span><span>{peer.name}</span><small>{peer.clientId===store.doc.clientID?'You':'Editing'}</small></div>)}</div><label className="name-field">表示名<input value={name} onChange={e=>setName(e.target.value)} onBlur={()=>store.setName(name)} maxLength={40}/></label><div className="share-footer"><span><Link2 size={12}/>リンクを知っている人が編集できます</span><button className="text-button" onClick={()=>download(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}),`${project.name}.poietra.json`)}><Download size={13}/>Save project</button></div></Modal>
