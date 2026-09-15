@@ -3,7 +3,7 @@ import * as Y from 'yjs';
 import { makeBlankScene, makeDemoProject } from '../shared/demo';
 import { applyChanges, getShared, initializeDocument, LOCAL_ORIGIN, readProject } from '../shared/document';
 import { parseProjectFile } from '../shared/project-file';
-import { deleteScene, duplicateScene, renameScene } from '../src/editor/scenes';
+import { deleteScene, duplicateScene, moveScene, renameScene } from '../src/editor/scenes';
 import { deleteComposition } from '../src/editor/structure';
 
 function document(count = 2) {
@@ -33,6 +33,43 @@ function portable(doc: Y.Doc) {
 }
 
 describe('scene management', () => {
+  it('moves a Scene in one Undo action without replacing its shared contents', () => {
+    const doc = document(3), undo = undoManager(doc);
+    const originalMap = getShared(doc, ['scenes', 'scene-2']);
+    moveScene(doc, 'scene-2', -1);
+    expect(project(doc).sceneOrder).toEqual(['scene-2', 'scene-1', 'scene-3']);
+    expect(getShared(doc, ['scenes', 'scene-2'])).toBe(originalMap);
+    undo.undo(); expect(project(doc).sceneOrder).toEqual(['scene-1', 'scene-2', 'scene-3']);
+    moveScene(doc, 'scene-2', 1);
+    expect(project(doc).sceneOrder).toEqual(['scene-1', 'scene-3', 'scene-2']);
+    let updates = 0; doc.on('update', () => updates++);
+    moveScene(doc, 'scene-2', 1); moveScene(doc, 'scene-1', -1);
+    expect(updates).toBe(0); portable(doc);
+    undo.destroy(); doc.destroy();
+  });
+
+  it('keeps peer Scene additions and edits when undoing a reorder', () => {
+    const alice = document(3), bob = fork(alice), undo = undoManager(alice);
+    moveScene(alice, 'scene-1', 1);
+    const added = duplicateScene(bob, 'scene-3');
+    renameScene(bob, 'scene-1', 'Peer title');
+    merge(alice, bob); undo.undo(); merge(alice, bob);
+    expect(project(alice).sceneOrder).toEqual(['scene-1', 'scene-2', 'scene-3', added]);
+    expect(project(alice).scenes['scene-1'].name).toBe('Peer title'); portable(alice);
+    undo.destroy(); alice.destroy(); bob.destroy();
+  });
+
+  it('converges concurrent reorders and can move a Scene with duplicate CRDT entries again', () => {
+    const alice = document(3), bob = fork(alice);
+    moveScene(alice, 'scene-2', -1); moveScene(bob, 'scene-2', 1); merge(alice, bob); portable(alice);
+    const order = project(alice).sceneOrder, position = order.indexOf('scene-2');
+    const direction = position === 0 ? 1 : -1;
+    const expected = [...order]; expected.splice(position, 1); expected.splice(position + direction, 0, 'scene-2');
+    moveScene(alice, 'scene-2', direction); merge(alice, bob);
+    expect(project(alice).sceneOrder).toEqual(expected); portable(alice);
+    alice.destroy(); bob.destroy();
+  });
+
   it('copies complete animation data independently and remaps every internal ID in one transaction', () => {
     const doc = document();
     applyChanges(doc, [

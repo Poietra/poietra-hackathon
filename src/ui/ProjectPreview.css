@@ -1,0 +1,15 @@
+.dialog.project-preview-dialog{width:min(1000px,calc(100vw - 40px));max-height:calc(100dvh - 40px);overflow:auto}
+.project-preview-frame{position:relative;width:100%;overflow:hidden;border-radius:4px}
+.project-preview-frame>.scene-canvas,.project-preview-svg{position:absolute;inset:0;width:100%;height:100%}
+.project-preview-svg>svg{display:block;width:100%;height:100%}
+.project-preview-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:#aaaabb;font-size:12px}
+.project-preview-transport{display:flex;gap:12px;align-items:center;margin-top:16px}
+.project-preview-transport>input{flex:1;min-width:0;accent-color:#9696eb}
+.project-preview-transport>span{font-variant-numeric:tabular-nums;color:#adadbf;font-size:11px;white-space:nowrap}
+.project-preview-scenes{display:flex;gap:8px;overflow-x:auto;margin-top:18px;padding-bottom:6px}
+.project-preview-scenes>button{min-width:120px;max-width:220px;align-items:flex-start;flex-direction:column;gap:5px;flex-shrink:0}
+.project-preview-scenes>button>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.project-preview-scenes>button>small{font-size:10px;color:#8f8fa1;font-variant-numeric:tabular-nums}
+.project-preview-scenes>button[aria-current]{border-color:#9696eb;background:#303044}
+.project-preview-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px;color:#aaaabb;font-size:11px}
+@media(max-width:600px){.project-preview-transport{gap:6px}.project-preview-transport>span{font-size:10px}.project-preview-dialog{padding:18px}}

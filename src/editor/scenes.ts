@@ -75,3 +75,17 @@ export function deleteScene(doc: Y.Doc, sceneId: string): { selectedId: string }
   }, LOCAL_ORIGIN);
   return { selectedId };
 }
+
+/** Move a Scene relative to its visible neighbor without rewriting other Scene data. */
+export function moveScene(doc: Y.Doc, sceneId: string, direction: -1 | 1): void {
+  doc.transact(() => {
+    const current = currentScene(doc, sceneId);
+    const neighbor = current.project.sceneOrder[current.index + direction];
+    if (!neighbor) return;
+    const raw = current.order.toArray();
+    for (let index = raw.length - 1; index >= 0; index--) if (raw[index] === sceneId) current.order.delete(index, 1);
+    let position = current.order.toArray().indexOf(neighbor);
+    if (position < 0) { position = current.order.length; current.order.insert(position, [neighbor]); }
+    current.order.insert(position + (direction > 0 ? 1 : 0), [sceneId]);
+  }, LOCAL_ORIGIN);
+}

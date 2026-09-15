@@ -1,6 +1,7 @@
 import { BufferTarget, CanvasSource, Mp4OutputFormat, Output, WebMOutputFormat } from 'mediabunny';
-import { sceneSegments, type Scene } from '../../shared/model';
-import { evaluateScene } from './evaluate';
+import { sceneSegments, type Project, type Scene } from '../../shared/model';
+import { projectSegments, projectSegmentAt } from '../../shared/project-timeline';
+import { evaluateScene, type Frame } from './evaluate';
 import type { MotionKernel } from './kernel';
 import type { FramePainter } from './painter-contract';
 import type { ExportOptions, ExportResult } from './render-contract';
@@ -13,7 +14,7 @@ export { getExportCapabilities } from './exporting/codecs';
 
 const MAX_DIMENSION = 8192;
 
-function dimensions(scene: Scene, options: ExportOptions): { width: number; height: number } {
+function dimensions(scene: Pick<Scene, 'width' | 'height'>, options: ExportOptions): { width: number; height: number } {
   if (![scene.width, scene.height].every(value => Number.isFinite(value) && value > 0)) {
     throw new Error('Scene の幅と高さを正の数に設定してください。');
   }
@@ -30,18 +31,52 @@ function dimensions(scene: Scene, options: ExportOptions): { width: number; heig
   return { width, height };
 }
 
-/** Capture a private scene before any asynchronous work so collaboration cannot alter the export. */
+interface VideoTimeline {
+  size: Pick<Scene, 'width' | 'height'>;
+  durations: number[];
+  prepare: () => Promise<void>;
+  frameAt: (time: number) => Frame;
+}
+
+/** Capture before asynchronous work so collaboration cannot alter this export. */
 export async function exportScene(scene: Scene, kernel: MotionKernel, options: ExportOptions): Promise<ExportResult> {
   const snapshot = structuredClone(scene);
+  return exportTimeline({
+    size: snapshot, durations: sceneSegments(snapshot).map(segment => segment.duration),
+    prepare: () => prepareScene(snapshot), frameAt: time => evaluateScene(snapshot, time, kernel),
+  }, options);
+}
+
+/** One encoder and one time axis, retaining each Scene's dimensions, background and glyphs. */
+export async function exportProject(project: Project, kernel: MotionKernel, options: ExportOptions): Promise<ExportResult> {
+  const snapshot = structuredClone(project);
+  const settings = { ...options };
+  checkAbort(settings.signal);
+  const segments = projectSegments(snapshot);
+  const first = segments[0]?.scene;
+  if (!first) throw new Error('書き出す Scene がありません。');
+  for (const { scene } of segments) {
+    if (![scene.width, scene.height].every(value => Number.isFinite(value) && value > 0)) throw new Error('Scene の幅と高さを正の数に設定してください。');
+  }
+  return exportTimeline({
+    size: first, durations: segments.flatMap(({ scene }) => sceneSegments(scene).map(segment => segment.duration)),
+    prepare: async () => { for (const { scene } of segments) { checkAbort(settings.signal); await prepareScene(scene); } },
+    frameAt: time => {
+      const segment = projectSegmentAt(segments, time)!;
+      return evaluateScene(segment.scene, Math.max(0, time - segment.start), kernel);
+    },
+  }, settings);
+}
+
+async function exportTimeline(timeline: VideoTimeline, options: ExportOptions): Promise<ExportResult> {
   const settings = { ...options };
   const { signal, onProgress, fps, format } = settings;
   checkAbort(signal);
   if (format !== 'mp4' && format !== 'webm') throw new Error('書き出し形式には MP4 または WebM を選択してください。');
   if (![24, 30, 60].includes(fps)) throw new Error('フレームレートには 24、30、60 fps のいずれかを選択してください。');
-  const { width, height } = dimensions(snapshot, settings);
-  const segments = sceneSegments(snapshot);
-  const sceneDurationMs = segments.reduce((total, segment) => total + segment.duration, 0);
-  if (!Number.isFinite(sceneDurationMs) || sceneDurationMs <= 0 || segments.some(segment => !Number.isFinite(segment.duration) || segment.duration < 0)) {
+  const { width, height } = dimensions(timeline.size, settings);
+  const sceneDurationMs = timeline.durations.reduce((total, duration) => total + duration, 0);
+  if (!Number.isFinite(sceneDurationMs) || sceneDurationMs <= 0 || timeline.durations.some(duration => !Number.isFinite(duration) || duration < 0)) {
     throw new Error('書き出す Scene の再生時間を 0 より大きく設定してください。');
   }
   const reason = environmentReason();
@@ -64,7 +99,7 @@ export async function exportScene(scene: Scene, kernel: MotionKernel, options: E
     checkAbort(signal);
     if (!codec) throw new Error(`${format.toUpperCase()} を ${width} × ${height} で書き出せません。解像度を下げるか、別の形式をお試しください。`);
     stage = 'フォントと数式の準備';
-    await abortable(prepareScene(snapshot), signal);
+    await abortable(timeline.prepare(), signal);
     checkAbort(signal);
     canvas = document.createElement('canvas');
     canvas.width = width;
@@ -90,7 +125,7 @@ export async function exportScene(scene: Scene, kernel: MotionKernel, options: E
     for (let index = 0; index < frameCount; index++) {
       checkAbort(signal);
       const timestamp = index / fps;
-      const frame = evaluateScene(snapshot, timestamp * 1000, kernel);
+      const frame = timeline.frameAt(timestamp * 1000);
       await painter.render(frame, { signal });
       checkAbort(signal);
       // Let an in-flight encoder call settle before canceling its output. In particular,

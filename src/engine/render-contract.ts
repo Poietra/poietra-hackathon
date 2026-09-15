@@ -1,6 +1,6 @@
 import type { Frame, RenderObject } from './evaluate';
 import type { MotionKernel } from './kernel';
-import type { Scene } from '../../shared/model';
+import type { Project, Scene } from '../../shared/model';
 
 /** Bounds in Scene coordinates, before state.rotation is applied around the object anchor. */
 export interface ObjectBounds { x: number; y: number; width: number; height: number }
@@ -55,4 +55,6 @@ export interface RendererContract {
 export interface ExporterContract {
   getExportCapabilities(): Promise<ExportCapabilities>;
   exportScene(scene: Scene, kernel: MotionKernel, options: ExportOptions): Promise<ExportResult>;
+  /** Optional for older hosts. Scenes play in project order with their original aspect ratios. */
+  exportProject?(project: Project, kernel: MotionKernel, options: ExportOptions): Promise<ExportResult>;
 }
