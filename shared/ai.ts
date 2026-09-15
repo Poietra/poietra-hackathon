@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { getShared, getValue, LOCAL_ORIGIN, readProject, toShared, type Change } from './document';
 import { defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type SceneObject } from './model';
+import { ImageAssetSchema, type ImageAsset } from './images';
 import * as Y from 'yjs';
 
 const pathCoordinate = z.number().finite().min(-10000).max(10000);
@@ -12,20 +13,50 @@ const bezierPath = z.object({
 const stateProperties = ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'visible', 'fill', 'stroke', 'strokeWidth', 'text', 'fontSize', 'cornerRadius', 'effect'] as const;
 const objectFields = { compositionId: z.string(), name: z.string(), x: z.number(), y: z.number(), width: z.number(), height: z.number(), fill: z.string(), text: z.string(), fontSize: z.number() };
 const localReference = z.string().regex(/^@[a-zA-Z][a-zA-Z0-9_-]{0,62}$/);
+export const GENERATED_IMAGE_SIZES = { square: { width: 1024, height: 1024 }, landscape: { width: 1536, height: 1024 }, portrait: { width: 1024, height: 1536 } } as const;
+export const MAX_GENERATED_IMAGES = 2;
+const setStateOperation = z.object({ action: z.literal('setState'), compositionId: z.string(), objectId: z.string(), property: z.enum(stateProperties), value: z.union([z.number(), z.string(), z.boolean()]) });
+const setTrackOperation = z.object({ action: z.literal('setTrack'), transitionId: z.string(), objectId: z.string(), property: z.enum(['type', 'start', 'duration', 'easing', 'order']), value: z.union([z.number(), z.string()]) });
+const setMotionPathOperation = z.object({ action: z.literal('setMotionPath'), transitionId: z.string(), objectId: z.string(), path: bezierPath.nullable() });
+const setShapePathOperation = z.object({ action: z.literal('setShapePath'), compositionId: z.string(), objectId: z.string(), path: bezierPath });
+const setCompositionDurationOperation = z.object({ action: z.literal('setCompositionDuration'), compositionId: z.string(), duration: z.number() });
+const setTransitionDurationOperation = z.object({ action: z.literal('setTransitionDuration'), transitionId: z.string(), duration: z.number() });
+const addObjectOperation = z.object({ action: z.literal('addObject'), ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'arrow', 'numberline']) });
+const createObjectOperation = z.object({ action: z.literal('createObject'), ref: localReference, ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'path', 'arrow', 'numberline']) });
+const appendCompositionOperation = z.object({ action: z.literal('appendComposition'), ref: localReference, transitionRef: localReference, name: z.string().trim().min(1).max(100), duration: z.number().finite().min(0).max(120000), transitionDuration: z.number().finite().min(0).max(120000) });
+/** The model asks for a picture; the server generates it and replaces this with createImage before compiling. */
+const generateImageOperation = z.object({ action: z.literal('generateImage'), ref: localReference, compositionId: z.string(), name: z.string(), prompt: z.string().trim().min(1).max(1000), size: z.enum(['square', 'landscape', 'portrait']), transparent: z.boolean(), x: z.number(), y: z.number(), width: z.number() });
+const createImageOperation = z.object({ action: z.literal('createImage'), ref: localReference, compositionId: z.string(), name: z.string(), x: z.number(), y: z.number(), width: z.number(), height: z.number(), image: ImageAssetSchema });
 export const EditProposalSchema = z.object({
   message: z.string().max(3000),
-  operations: z.array(z.discriminatedUnion('action', [
-    z.object({ action: z.literal('setState'), compositionId: z.string(), objectId: z.string(), property: z.enum(stateProperties), value: z.union([z.number(), z.string(), z.boolean()]) }),
-    z.object({ action: z.literal('setTrack'), transitionId: z.string(), objectId: z.string(), property: z.enum(['type', 'start', 'duration', 'easing', 'order']), value: z.union([z.number(), z.string()]) }),
-    z.object({ action: z.literal('setMotionPath'), transitionId: z.string(), objectId: z.string(), path: bezierPath.nullable() }),
-    z.object({ action: z.literal('setShapePath'), compositionId: z.string(), objectId: z.string(), path: bezierPath }),
-    z.object({ action: z.literal('setCompositionDuration'), compositionId: z.string(), duration: z.number() }),
-    z.object({ action: z.literal('setTransitionDuration'), transitionId: z.string(), duration: z.number() }),
-    z.object({ action: z.literal('addObject'), ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'arrow', 'numberline']) }),
-    z.object({ action: z.literal('createObject'), ref: localReference, ...objectFields, kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'path', 'arrow', 'numberline']) }),
-    z.object({ action: z.literal('appendComposition'), ref: localReference, transitionRef: localReference, name: z.string().trim().min(1).max(100), duration: z.number().finite().min(0).max(120000), transitionDuration: z.number().finite().min(0).max(120000) }),
-  ])).max(100),
+  operations: z.array(z.discriminatedUnion('action', [setStateOperation, setTrackOperation, setMotionPathOperation, setShapePathOperation, setCompositionDurationOperation, setTransitionDurationOperation, addObjectOperation, createObjectOperation, appendCompositionOperation, generateImageOperation])).max(100),
 });
+const ResolvedProposalSchema = z.object({
+  message: z.string().max(3000),
+  operations: z.array(z.discriminatedUnion('action', [setStateOperation, setTrackOperation, setMotionPathOperation, setShapePathOperation, setCompositionDurationOperation, setTransitionDurationOperation, addObjectOperation, createObjectOperation, appendCompositionOperation, createImageOperation])).max(100),
+});
+export type ProposalOperation = z.infer<typeof EditProposalSchema>['operations'][number];
+export type GenerateImageOperation = z.infer<typeof generateImageOperation>;
+export type CreateImageOperation = z.infer<typeof createImageOperation>;
+/** compileProposal input: model operations whose generateImage requests have become createImage. */
+export interface CompilableProposal { message: string; operations: Array<ProposalOperation | CreateImageOperation> }
+
+const PLACEHOLDER_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+/** A stand-in with the requested dimensions, so the proposal can be validated before any image is generated. */
+export function placeholderImage(size: GenerateImageOperation['size']): ImageAsset { return { src: PLACEHOLDER_IMAGE, ...GENERATED_IMAGE_SIZES[size] }; }
+
+/** Replace generateImage requests with createImage operations; height follows the asset's aspect ratio. */
+export function withGeneratedImages(raw: z.infer<typeof EditProposalSchema>, asset: (operation: GenerateImageOperation) => ImageAsset | undefined): CompilableProposal {
+  const requested = raw.operations.filter(operation => operation.action === 'generateImage').length;
+  if (requested > MAX_GENERATED_IMAGES) throw new Error(`一度に生成できる画像は ${MAX_GENERATED_IMAGES} 枚までです。`);
+  return { message: raw.message, operations: raw.operations.map(operation => {
+    if (operation.action !== 'generateImage') return operation;
+    const image = asset(operation);
+    if (!image) throw new Error('画像の生成が完了していません。');
+    const height = Math.round(operation.width * image.height / image.width * 100) / 100;
+    return { action: 'createImage', ref: operation.ref, compositionId: operation.compositionId, name: operation.name, x: operation.x, y: operation.y, width: operation.width, height: Number.isFinite(height) ? height : 0, image };
+  }) };
+}
 
 export interface ProposalGuard { path: string[]; expected: unknown; existed: boolean; parentIdentity?: string }
 export type GuardedChange = Change & ProposalGuard;
@@ -155,9 +186,10 @@ export function applyProposal(doc: Y.Doc, proposal: EditProposal, origin: unknow
   }, origin);
 }
 
-export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: z.infer<typeof EditProposalSchema>, _scope?: EditScope): EditProposal {
+export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, raw: CompilableProposal, _scope?: EditScope): EditProposal {
   // Selection supplies context; actual Scene identities, locks and guards authorize edits.
-  const input = EditProposalSchema.parse(raw);
+  if (raw.operations.some(operation => operation.action === 'generateImage')) throw new Error('画像の生成が完了していません。');
+  const input = ResolvedProposalSchema.parse(raw);
   const original = owns(project.scenes, sceneId) ? project.scenes[sceneId] : undefined;
   if (!original) throw new Error('Scene が見つかりません。');
   const scene = structuredClone(original);
@@ -191,7 +223,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
   };
   let appendCount = 0;
   for (const operation of input.operations) {
-    if (operation.action === 'createObject') declarations.set(operation, reserve(operation.ref, 'object'));
+    if (operation.action === 'createObject' || operation.action === 'createImage') declarations.set(operation, reserve(operation.ref, 'object'));
     else if (operation.action === 'addObject') declarations.set(operation, newId());
     else if (operation.action === 'appendComposition') {
       if (++appendCount > 4 || original.compositionOrder.length + appendCount > 100) throw new Error('一度に追加できる Composition は 4 個まで、Scene 全体では 100 個までです。');
@@ -230,12 +262,20 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
         for (const objectId of Object.keys(transition.tracks)) for (const property of ['objectId', 'start', 'duration']) guard([...base, 'transitions', id, 'tracks', objectId, property]);
       }
     }
-    if (operation.action !== 'addObject' && operation.action !== 'createObject') continue;
-    for (const key of ['x', 'y', 'width', 'height', 'fill', 'text', 'fontSize'] as const) validateStateValue(key, operation[key], operation.kind);
+    if (operation.action !== 'addObject' && operation.action !== 'createObject' && operation.action !== 'createImage') continue;
     const id = declarations.get(operation)!;
     const compositionId = resolve(operation.compositionId, 'composition');
-    const object: SceneObject = { id, name: operation.name.trim().slice(0, 100) || operation.kind, kind: operation.kind, order: nextOrder++, locked: false, groupId: null };
-    const state = defaultState(operation.kind, { x: operation.x, y: operation.y, width: operation.width, height: operation.height, fill: operation.fill, text: operation.text, fontSize: operation.fontSize });
+    let object: SceneObject, state: ObjectState;
+    if (operation.action === 'createImage') {
+      // Match the editor's Add image defaults; the asset keeps its own pixels and aspect ratio.
+      for (const key of ['x', 'y', 'width', 'height'] as const) validateStateValue(key, operation[key], 'image');
+      object = { id, name: operation.name.trim().slice(0, 100) || 'Image', kind: 'image', image: ImageAssetSchema.parse(operation.image), order: nextOrder++, locked: false, groupId: null };
+      state = defaultState('image', { x: operation.x, y: operation.y, width: operation.width, height: operation.height, cornerRadius: 0, fill: 'none', stroke: '#ffffff', strokeWidth: 0 });
+    } else {
+      for (const key of ['x', 'y', 'width', 'height', 'fill', 'text', 'fontSize'] as const) validateStateValue(key, operation[key], operation.kind);
+      object = { id, name: operation.name.trim().slice(0, 100) || operation.kind, kind: operation.kind, order: nextOrder++, locked: false, groupId: null };
+      state = defaultState(operation.kind, { x: operation.x, y: operation.y, width: operation.width, height: operation.height, fill: operation.fill, text: operation.text, fontSize: operation.fontSize });
+    }
     created.set(id, { object, state, compositionId, declared: false }); scene.objects[id] = object;
     for (const composition of Object.values(scene.compositions)) {
       guardComposition(composition.id);
@@ -283,7 +323,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
       scene.compositions[id] = composition; scene.compositionOrder.push(id); appended.push(id);
       scene.transitions[transitionId] = { id: transitionId, fromId, toId: id, duration: finalDurations.get(transitionId) ?? operation.transitionDuration, tracks: {} };
       newTransitions.add(transitionId);
-    } else if (operation.action === 'addObject' || operation.action === 'createObject') {
+    } else if (operation.action === 'addObject' || operation.action === 'createObject' || operation.action === 'createImage') {
       guardComposition(operation.compositionId);
       created.get(declarations.get(source)!)!.declared = true;
     } else if (operation.action === 'setState') {

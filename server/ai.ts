@@ -2,9 +2,10 @@ import OpenAI from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import * as Y from 'yjs';
 import { z } from 'zod';
-import { compileProposal, EditProposalSchema, type EditProposal } from '../shared/ai';
+import { compileProposal, EditProposalSchema, GENERATED_IMAGE_SIZES, MAX_GENERATED_IMAGES, placeholderImage, withGeneratedImages, type EditProposal, type GenerateImageOperation } from '../shared/ai';
 import { AiHistorySchema } from '../shared/ai-conversation';
 import { readProject } from '../shared/document';
+import { IMAGE_BYTES_LIMIT, imageMime, type ImageAsset } from '../shared/images';
 
 export const ROOM_PATTERN = /^[a-zA-Z0-9_-]{16,80}$/;
 export const AiRequestSchema = z.object({
@@ -30,8 +31,42 @@ You can adjust positions, colors, text/TeX, visibility, and animation timing or 
 setMotionPath sets a cubic Bezier movement path with c1 and c2 in absolute Scene pixels; its endpoints are the object's x/y in the transition's source and destination compositions. A null path restores straight-line motion. Existing start/end positions must stay unchanged unless the user asks to change them. A non-null motion path requires final track type move and the object visible in both compositions. If needed, include setTrack type move; do not make hidden objects visible merely to attach a path. For a missing track, setMotionPath creates a complete Move track covering the transition. A request for a smooth arc can use controls one third and two thirds along the anchor displacement with a perpendicular offset. For an upward arc on screen use smaller y values. setShapePath edits the visible path object's c1/c2 in its local unrotated coordinates relative to its start x/y; width/height remain the endpoint displacement. Do not confuse the shape's relative path with an object's absolute motion path. Never edit the separate visible path object just because a selected circle moves near it.
 To create and animate in one proposal, use createObject with a unique ref such as @ball (an @ followed by a letter and at most 62 letters, digits, underscores or hyphens). That reference belongs only to this proposal; use it as objectId in setState, setTrack, setMotionPath or setShapePath. Do not invent a stored ID or refer to a prior proposal's ref. createObject initially creates independent states in all compositions available at that point and is visible only in its specified compositionId; explicitly set visible=true and the destination x/y for a new object's Move across two compositions. For a new text/equation entering with Write, create it in the destination Composition and set its track type=write, leaving source visibility false. All new states and tracks are applied together. Legacy addObject adds a static object without a reference; prefer createObject when later operations need the new object. createObject also supports kind path with local controls edited by setShapePath.
 setTransitionDuration changes an existing Transition's duration in milliseconds (0 to 120000). It never rescales or clamps other tracks. All final tracks, including untouched and locked tracks, must fit the final duration. To lengthen a movement beyond the current Transition, include both setTransitionDuration and the intended setTrack changes. To shorten a Transition, explicitly adjust only requested unlocked tracks as necessary; if an unrelated or locked track would no longer fit, explain the conflict and ask before changing unrelated animation. A shorter duration must not silently truncate other animation. appendComposition adds a new Composition at the end of the current Scene and creates its incoming Transition. Use distinct unique proposal-local ref and transitionRef, for example @next and @travel, plus name, duration and transitionDuration in milliseconds (0 to 120000). At most 4 compositions can be appended in one proposal and 100 can exist in the Scene. Declare appendComposition before any operation targeting its composition or transition references. Use its ref as compositionId and transitionRef as transitionId in subsequent operations, including createObject, setState, setTrack, setMotionPath and duration changes. References have separate identity kinds but all names must be unique across the proposal. Append copies the last Composition's complete states as they exist at that point in the operation list, including earlier proposed state edits and objects already created. Changes after append do not propagate back or forward to other compositions. Objects created after append are initially visible only in their specified Composition, not earlier or other appended states. To move a new object from a one-Composition Scene, createObject in the existing Composition, appendComposition, setState destination x/y, then setTrack and optionally setMotionPath on the new Transition. To introduce a title with Write, append first, createObject in the new Composition, then setTrack type write on its incoming Transition. Existing source states are preserved unless explicitly edited. The append starts with no explicit tracks; objects implicitly interpolate across the full Transition until setTrack specifies timing/type. Do not copy an unrelated Transition's animations. Appending at the end is supported; creating a Scene, inserting/reordering/deleting compositions, and modifying another Scene are unavailable. Explain these unsupported requests without pretending they happened.
-Image objects contain an uploaded raster asset shared across their compositions. You may change their position, dimensions, rotation, opacity, visibility, corner radius, border or effect, and animate them with Move/Fade/Grow/Write. Write reveals an image left-to-right. Preserve aspect ratio when resizing unless stretching is explicitly requested. Never change image fill, text or fontSize, which cannot alter bitmap pixels. Creating/replacing image assets and editing their pixels are unavailable; ask the user to use Add image for uploads. For TeX use standard base and ams commands. Do not generate source code or whole videos.
+Image objects contain a raster asset shared across their compositions. You may change their position, dimensions, rotation, opacity, visibility, corner radius, border or effect, and animate them with Move/Fade/Grow/Write. Write reveals an image left-to-right. Preserve aspect ratio when resizing unless stretching is explicitly requested. Never change image fill, text or fontSize, which cannot alter bitmap pixels. Existing image pixels cannot be edited or replaced.
+For TeX use standard base and ams commands. Do not generate source code or whole videos.
 Mention the concrete changes briefly. If a request cannot be expressed with these operations, explain and return no operations.`;
+const imageInstructions = `\ngenerateImage creates a new image object from a text prompt when the user asks for a picture, illustration, icon, photo-like element or background art. Give a unique ref, the target compositionId, a short name, and a concrete prompt in any language describing subject, style, colors and mood; the picture is generated after the proposal is accepted, so describe it completely. Choose size square, landscape or portrait, set transparent=true for a cutout illustration or icon without background (preferred when placing a picture over the scene), and give the center x/y and width in Scene pixels; height follows the generated aspect ratio (1:1, 3:2 or 2:3). Use the ref as objectId in later setState, setTrack or setMotionPath operations exactly like createObject; an image can enter with Write, Fade or Grow. At most ${MAX_GENERATED_IMAGES} generated images per proposal. To change a generated picture, generate a new one; pixels cannot be edited.`;
+const noImageInstructions = '\nGenerating or uploading images is unavailable on this server; ask the user to use Add image for uploads and return no image operations.';
+
+export interface ImageGeneration {
+  model: string;
+  quality: 'low' | 'medium' | 'high';
+  /** Persist raster bytes for this room and return the asset path the editor can load. */
+  store(bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<string>;
+}
+export function imageQuality(value: string | undefined): ImageGeneration['quality'] {
+  return value === 'low' || value === 'high' ? value : 'medium';
+}
+// Generation starts only while enough of the room lock remains for the picture and its upload.
+const IMAGE_BUDGET_MS = 60_000;
+
+async function generateImage(client: OpenAI, images: ImageGeneration, operation: GenerateImageOperation): Promise<ImageAsset> {
+  const dimensions = GENERATED_IMAGE_SIZES[operation.size];
+  for (const compression of [80, 40]) {
+    const response = await client.images.generate({
+      model: images.model, prompt: operation.prompt, n: 1, size: `${dimensions.width}x${dimensions.height}`, quality: images.quality,
+      background: operation.transparent ? 'transparent' : 'auto', output_format: 'webp', output_compression: compression,
+    });
+    const encoded = response.data?.[0]?.b64_json;
+    if (!encoded) throw new Error('画像を生成できませんでした。内容を変えてお試しください。');
+    const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+    const mime = imageMime(bytes);
+    if (!mime) throw new Error('生成した画像を読み取れませんでした。');
+    // A denser picture may exceed the room's per-image limit; retry once with stronger compression.
+    if (bytes.byteLength > IMAGE_BYTES_LIMIT) continue;
+    return { src: await images.store(bytes, mime), ...dimensions };
+  }
+  throw new Error('生成した画像が 1 MB を超えました。単純な内容か小さいサイズでお試しください。');
+}
 
 // One Responses call, retried once by the SDK on transient failures, then at most one
 // validation repair: the whole request stays inside the room's AI lock.
@@ -46,7 +81,7 @@ function rejectionReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: string, model: string) {
+export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: string, model: string, options: { images?: ImageGeneration } = {}) {
   input = AiRequestSchema.parse(input);
   const started = Date.now();
   // Keep preconditions from the instant the request starts, even if people edit while AI runs.
@@ -70,7 +105,7 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
       role: turn.role,
       content: turn.role === 'assistant' ? JSON.stringify({ message: turn.content, proposalStatus: turn.proposalStatus ?? null }) : turn.content,
     }));
-    const messages: InputMessage[] = [{ role: 'developer', content: instructions + (input.supportsCompositionAppends ? '' : '\nThis client cannot apply appendComposition. Do not use appendComposition for this request. If adding a Composition is necessary, ask the user to reload the page to use the updated editor, and return no operations. Existing-object and existing-timeline editing remains available.') }, ...history, { role: 'user', content }];
+    const messages: InputMessage[] = [{ role: 'developer', content: instructions + (options.images ? imageInstructions : noImageInstructions) + (input.supportsCompositionAppends ? '' : '\nThis client cannot apply appendComposition. Do not use appendComposition for this request. If adding a Composition is necessary, ask the user to reload the page to use the updated editor, and return no operations. Existing-object and existing-timeline editing remains available.') }, ...history, { role: 'user', content }];
     const usage = { input: 0, cached: 0, output: 0 };
     let attempts = 0;
     async function generate(extra: InputMessage[]): Promise<ProposalOutput> {
@@ -87,13 +122,16 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
       if (!result.output_parsed) throw new Error('この依頼の編集案を作れませんでした。依頼を言い換えてお試しください。');
       return result.output_parsed;
     }
-    const compile = (parsed: ProposalOutput) => {
+    const compile = (parsed: ProposalOutput, asset: (operation: GenerateImageOperation) => ImageAsset | undefined) => {
       if (!input.supportsCompositionAppends && parsed.operations.some(operation => operation.action === 'appendComposition')) throw new Error('場面の追加を使うには、ページを再読み込みしてから依頼してください。');
-      return compileProposal(snapshot, project, input.sceneId, parsed, { selectedIds: input.selectedIds, compositionId: input.compositionId, transitionId: input.transitionId });
+      if (!options.images && parsed.operations.some(operation => operation.action === 'generateImage')) throw new Error('画像の生成はこのサーバーでは使えません。Add image で画像を追加してください。');
+      return compileProposal(snapshot, project, input.sceneId, withGeneratedImages(parsed, asset), { selectedIds: input.selectedIds, compositionId: input.compositionId, transitionId: input.transitionId });
     };
+    // Validate and repair against placeholders first, so no picture is paid for before the proposal is sound.
+    const placeholder = (operation: GenerateImageOperation) => placeholderImage(operation.size);
     let parsed = await generate([]);
     let proposal: EditProposal;
-    try { proposal = compile(parsed); }
+    try { proposal = compile(parsed, placeholder); }
     catch (error) {
       // The model sees its own rejected output and the exact reason, once. API failures,
       // truncated output and refusals are thrown by generate() and are never replayed.
@@ -104,9 +142,20 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
         { role: 'assistant', content: JSON.stringify(parsed) },
         { role: 'user', content: `The previous proposal was rejected before it reached the editor. Validation error: ${reason}\nReturn a corrected proposal for the same request. Use only object, composition and transition IDs that exist in the current Scene, or refs declared in this proposal; keep every track within its Transition duration; never edit locked objects. If the request cannot be satisfied with the available operations, explain why and return no operations.` },
       ]);
-      proposal = compile(parsed);
+      proposal = compile(parsed, placeholder);
     }
-    console.log(JSON.stringify({ event: 'ai_proposal', ms: Date.now() - started, attempts, operations: parsed.operations.length, changes: proposal.changes.length, usage }));
+    const requests = parsed.operations.filter((operation): operation is GenerateImageOperation => operation.action === 'generateImage');
+    if (requests.length) {
+      if (Date.now() - started > IMAGE_BUDGET_MS) throw new Error('時間内に画像を生成できませんでした。もう一度依頼してください。');
+      const assets = new Map<GenerateImageOperation, ImageAsset>();
+      for (const request of requests) {
+        const began = Date.now();
+        assets.set(request, await generateImage(client, options.images!, request));
+        console.log(JSON.stringify({ event: 'ai_image_generated', ms: Date.now() - began, size: request.size, transparent: request.transparent }));
+      }
+      proposal = compile(parsed, operation => assets.get(operation));
+    }
+    console.log(JSON.stringify({ event: 'ai_proposal', ms: Date.now() - started, attempts, operations: parsed.operations.length, changes: proposal.changes.length, images: requests.length, usage }));
     return proposal;
   } finally { snapshot.destroy(); }
 }

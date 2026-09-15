@@ -5,7 +5,7 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { makeDemoProject } from '../shared/demo';
 import { initializeDocument } from '../shared/document';
-import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, type AiRequest } from '../server/ai';
+import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, imageQuality, type AiRequest } from '../server/ai';
 import { presenceMessage, readPresenceUpdate, type Presence } from './presence';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { IMAGE_ASSET_PATH, IMAGE_UPLOAD_PATH, IMAGE_ROOM_BYTES_LIMIT, imageDigest, imageHeaders, imageMime, readImageBody } from '../shared/images';
@@ -166,15 +166,8 @@ export class ProjectRoom extends DurableObject<Env> {
     const upload = IMAGE_UPLOAD_PATH.exec(pathname);
     if (upload && request.method === 'POST') {
       try {
-        const bytes = await readImageBody(request), id = await imageDigest(bytes), mime = imageMime(bytes)!;
-        this.ctx.storage.transactionSync(() => {
-          if (this.ctx.storage.sql.exec('SELECT id FROM images WHERE id = ?', id).toArray().length) return;
-          const used = this.ctx.storage.sql.exec<{ size: number }>('SELECT COALESCE(SUM(size), 0) AS size FROM images').one().size;
-          if (used + bytes.length > IMAGE_ROOM_BYTES_LIMIT) throw new Error('この部屋の画像が保存できる容量を超えました。新しいプロジェクトを作成してください。');
-          this.ctx.storage.sql.exec('INSERT INTO images (id, mime, size) VALUES (?, ?, ?)', id, mime, bytes.length);
-          for (let offset = 0, part = 0; offset < bytes.length; offset += 128 * 1024, part++) this.ctx.storage.sql.exec('INSERT INTO image_chunks (id, part, data) VALUES (?, ?, ?)', id, part, bytes.slice(offset, offset + 128 * 1024));
-        });
-        return json({ src: `/api/rooms/${upload[1]}/images/${id}` });
+        const bytes = await readImageBody(request);
+        return json({ src: await this.saveImage(upload[1], bytes, imageMime(bytes)!) });
       } catch (error) { return json({ error: error instanceof Error ? error.message : '画像を保存できませんでした。' }, 400); }
     }
     if (image || upload) return json({ error: 'Method not allowed' }, 405);
@@ -221,6 +214,19 @@ export class ProjectRoom extends DurableObject<Env> {
     }
   }
 
+  /** Content-addressed, immutable room asset; shared by uploads and AI-generated pictures. */
+  async saveImage(roomId: string, bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<string> {
+    const id = await imageDigest(bytes);
+    this.ctx.storage.transactionSync(() => {
+      if (this.ctx.storage.sql.exec('SELECT id FROM images WHERE id = ?', id).toArray().length) return;
+      const used = this.ctx.storage.sql.exec<{ size: number }>('SELECT COALESCE(SUM(size), 0) AS size FROM images').one().size;
+      if (used + bytes.length > IMAGE_ROOM_BYTES_LIMIT) throw new Error('この部屋の画像が保存できる容量を超えました。新しいプロジェクトを作成してください。');
+      this.ctx.storage.sql.exec('INSERT INTO images (id, mime, size) VALUES (?, ?, ?)', id, mime, bytes.length);
+      for (let offset = 0, part = 0; offset < bytes.length; offset += 128 * 1024, part++) this.ctx.storage.sql.exec('INSERT INTO image_chunks (id, part, data) VALUES (?, ?, ?)', id, part, bytes.slice(offset, offset + 128 * 1024));
+    });
+    return `/api/rooms/${roomId}/images/${id}`;
+  }
+
   async propose(input: AiRequest) {
     if (!this.env.OPENAI_API_KEY) return { status: 503, body: { error: 'AI はまだ接続されていません。' } };
     const now = Date.now();
@@ -230,7 +236,9 @@ export class ProjectRoom extends DurableObject<Env> {
     // Covers one 60 s call retried once by the SDK plus one validation repair (see server/ai.ts).
     this.ctx.storage.sql.exec('INSERT OR REPLACE INTO ai_lock (id, request_id, until_ms) VALUES (1, ?, ?)', requestId, now + 180000);
     try {
-      const proposal = await createEditProposal(this.doc, input, this.env.OPENAI_API_KEY, this.env.OPENAI_MODEL);
+      const proposal = await createEditProposal(this.doc, input, this.env.OPENAI_API_KEY, this.env.OPENAI_MODEL, {
+        images: { model: this.env.OPENAI_IMAGE_MODEL || 'gpt-image-1', quality: imageQuality(this.env.OPENAI_IMAGE_QUALITY), store: (bytes, mime) => this.saveImage(input.roomId, bytes, mime) },
+      });
       return { status: 200, body: proposal };
     } catch (error) { return { status: 400, body: { error: aiErrorMessage(error) } }; }
     finally { this.ctx.storage.sql.exec('DELETE FROM ai_lock WHERE id = 1 AND request_id = ?', requestId); }

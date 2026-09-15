@@ -124,8 +124,25 @@ test('Ctrl+Enter sends a @codex request and applies the guarded proposal without
   await composer.fill('@codex 円を中央にしてください'); await composer.press('Control+Enter');
   await expect(page.getByText('Applied', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Apply edits' })).toHaveCount(0);
-  await expect(page.getByRole('status')).toContainText('即適用');
+  await expect(page.locator('.toast')).toContainText('即適用');
   await design(page); await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('640');
   await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
   await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('245');
+});
+
+test('an AI proposal that generated a picture adds an image object which renders and undoes', async ({ page }) => {
+  await open(page); await assistant(page);
+  const src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const state = (visible: boolean) => ({ x: 900, y: 200, width: 300, height: 200, rotation: 0, opacity: 1, visible, fill: 'none', stroke: '#ffffff', strokeWidth: 0, text: '', fontSize: 36, cornerRadius: 0, effect: 'none', path: { c1: { x: 140, y: 0 }, c2: { x: 260, y: -180 } } });
+  await page.route('**/api/ai/propose', route => fulfill(route, { id: crypto.randomUUID(), message: '星の画像を追加しました。', count: 1, changes: [
+    { path: ['scenes', 'scene-1', 'objects', 'obj_ai_star'], value: { id: 'obj_ai_star', name: 'AI star', kind: 'image', image: { src, width: 1536, height: 1024 }, order: 9, locked: false, groupId: null }, expected: null, existed: false },
+    { path: ['scenes', 'scene-1', 'compositions', 'comp-1', 'states', 'obj_ai_star'], value: state(true), expected: null, existed: false },
+    { path: ['scenes', 'scene-1', 'compositions', 'comp-2', 'states', 'obj_ai_star'], value: state(false), expected: null, existed: false },
+  ] }));
+  await send(page, '星のイラストを右上に追加して');
+  await page.getByRole('button', { name: 'Apply edits' }).click();
+  await expect(page.getByRole('button', { name: 'AI star', exact: true })).toBeVisible();
+  await expect(page.locator('[data-testid="stage-main"] .scene-svg [data-object-id="obj_ai_star"]')).toBeVisible();
+  await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'AI star', exact: true })).toHaveCount(0);
 });
