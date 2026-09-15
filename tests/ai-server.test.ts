@@ -371,16 +371,16 @@ test('real SDK Retry-After plus repair cannot outlive the 170 second request dea
 });
 
 const tuning = responseTuning({});
-test('speed tuning sends low reasoning effort and the fast service tier by default, and env can remove them', async () => {
+test('speed tuning sends medium reasoning effort and the fast service tier by default, and env can remove them', async () => {
   parse.mockResolvedValueOnce(centered);
   await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { tuning });
-  expect(parse.mock.calls[0][0]).toMatchObject({ reasoning: { effort: 'low' }, service_tier: 'fast' });
+  expect(parse.mock.calls[0][0]).toMatchObject({ reasoning: { effort: 'medium' }, service_tier: 'fast' });
   expect(responseTuning({ OPENAI_REASONING_EFFORT: 'default', OPENAI_SERVICE_TIER: 'off' })).toEqual({});
   expect(responseTuning({ OPENAI_REASONING_EFFORT: 'minimal', OPENAI_SERVICE_TIER: 'priority' })).toEqual({ reasoningEffort: 'minimal', serviceTier: 'priority' });
   parse.mockResolvedValueOnce(centered);
   await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
   expect(parse.mock.calls[1][0]).not.toHaveProperty('reasoning'); expect(parse.mock.calls[1][0]).not.toHaveProperty('service_tier');
-  expect(JSON.parse(vi.mocked(console.log).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal', tuning: { reasoningEffort: 'low', serviceTier: 'fast' } });
+  expect(JSON.parse(vi.mocked(console.log).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal', tuning: { reasoningEffort: 'medium', serviceTier: 'fast' } });
 });
 
 test('a 400 for the tuning falls back to defaults within the request and stays off afterwards', async () => {
