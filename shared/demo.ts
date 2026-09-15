@@ -13,7 +13,7 @@ export function makeDemoProject(): Project {
   object('circle', 'circle', 'Circle', { x: 245, y: 520, width: 42, height: 42 }, { x: 955, y: 190 });
   object('equation', 'equation', 'Equation', { x: 855, y: 440, width: 310, height: 70, fontSize: 50, visible: false }, { visible: true });
   const scene: Scene = {
-    id: 'scene-1', name: 'Scene 1', width: 1280, height: 720, background: '#08090b', objects,
+    id: 'scene-1', name: 'Scene 1', width: 1280, height: 720, background: '#08090b', objects, audioTracks: {},
     compositionOrder: ['comp-1', 'comp-2'],
     compositions: {
       'comp-1': { id: 'comp-1', name: 'Composition 1', duration: 1000, accent: '#f4ce55', states: first },
@@ -31,6 +31,6 @@ export function makeDemoProject(): Project {
 
 export function makeBlankScene(id: string, name: string): Scene {
   const compositionId = `${id}-comp-1`;
-  return { id, name, width: 1280, height: 720, background: '#08090b', objects: {}, compositionOrder: [compositionId],
+  return { id, name, width: 1280, height: 720, background: '#08090b', objects: {}, audioTracks: {}, compositionOrder: [compositionId],
     compositions: { [compositionId]: { id: compositionId, name: 'Composition 1', duration: 1000, accent: '#f4ce55', states: {} } }, transitions: {} };
 }

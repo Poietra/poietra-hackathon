@@ -58,5 +58,5 @@ it('AI can position and animate an uploaded image but cannot claim to recolor it
   const doc = new Y.Doc(); initializeDocument(doc, project());
   const proposal = compileProposal(doc, readProject(doc)!, 'scene-1', { message: '画像を移動', operations: [{ action: 'setState', compositionId: 'comp-2', objectId: 'photo', property: 'x', value: 900 }, { action: 'setTrack', transitionId: 'transition-1', objectId: 'photo', property: 'type', value: 'move' }] });
   expect(proposal.changes.length).toBeGreaterThan(0);
-  expect(() => validateStateValue('fill', '#ff0000', 'image')).toThrow('画像'); expect(() => validateStateValue('width', -1, 'image')).toThrow('サイズ');
+  expect(() => validateStateValue('fill', '#ff0000', 'image')).toThrow('画像'); expect(() => validateStateValue('fill', '#ff0000', 'video')).toThrow('動画'); expect(() => validateStateValue('width', -1, 'image')).toThrow('サイズ');
 });

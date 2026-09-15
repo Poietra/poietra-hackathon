@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { LoaderCircle, Pause, PencilLine, Play, RotateCcw } from 'lucide-react';
 import { clamp, sceneSegments, type Project, type Selection } from '../../shared/model';
 import { projectSegments, projectSegmentAt } from '../../shared/project-timeline';
-import { evaluateScene } from '../engine/evaluate';
+import { useMediaPlayback } from '../editor/useMediaPlayback';
+import { evaluateScene, type Frame } from '../engine/evaluate';
 import type { MotionKernel } from '../engine/kernel';
 import type { RendererContract } from '../engine/render-contract';
 import type { PainterContract } from '../engine/painter-contract';
@@ -23,6 +24,9 @@ export function ProjectPreview(props: Props) {
 function ProjectPlayback({ project, renderer, kernel, createFramePainter, onEdit, onOpenChange }: Props) {
   const [time, setTime] = useState(0), [playing, setPlaying] = useState(false);
   const [prepared, setPrepared] = useState<object | null>(null), [error, setError] = useState('');
+  const [preparedFrame, setPreparedFrame] = useState<Frame | null>(null);
+  const preparedFrameScene = useRef<string | null>(null);
+  const playRequest = useRef(0);
   const [painted, setPainted] = useState<CanvasPresentation | null>(null);
   const [size, setSize] = useState({ width: 800, height: 450 });
   const viewport = useRef<HTMLDivElement>(null);
@@ -33,9 +37,34 @@ function ProjectPlayback({ project, renderer, kernel, createFramePainter, onEdit
   const first = segments[0]?.scene;
   const local = current ? clamp(time - current.start, 0, current.duration) : 0;
   const frame = useMemo(() => scene ? evaluateScene(scene, local, kernel) : null, [scene, local, kernel]);
+  const media = useMediaPlayback(scene ?? null, local, playing, failure => { setPlaying(false); setError(failure.message); });
   const key = `project-preview:${scene?.id}:${first?.width}:${first?.height}`;
   const ready = prepared === project;
-  const svg = useMemo(() => frame && ready ? renderer.frameToSvg(frame, { idPrefix: 'project-preview' }) : '', [frame, ready, renderer]);
+  const displayFrame = frame?.objects.some(item => item.object.kind === 'video') ? (preparedFrameScene.current === scene?.id ? preparedFrame : null) : frame;
+  const svg = useMemo(() => displayFrame && ready ? renderer.frameToSvg(displayFrame, { idPrefix: 'project-preview' }) : '', [displayFrame, ready, renderer]);
+  const prepareQueue = useRef<{ controller: AbortController; busy: boolean; next: Frame | null }>({ controller: new AbortController(), busy: false, next: null });
+  useEffect(() => {
+    const queue = { controller: new AbortController(), busy: false, next: null as Frame | null };
+    prepareQueue.current = queue; setPreparedFrame(null);
+    return () => queue.controller.abort();
+  }, [scene?.id, renderer]);
+  useEffect(() => {
+    const queue = prepareQueue.current;
+    queue.next = frame;
+    if (!ready || queue.busy || !frame) return;
+    queue.busy = true;
+    void (async () => {
+      try {
+        while (queue.next && !queue.controller.signal.aborted) {
+          const next = queue.next; queue.next = null;
+          await renderer.prepareFrame?.(next, queue.controller.signal);
+          if (!queue.controller.signal.aborted) { preparedFrameScene.current = scene?.id ?? null; setPreparedFrame(next); }
+        }
+      } catch (failure) { if (!queue.controller.signal.aborted) { setPlaying(false); setError(failure instanceof Error ? failure.message : '動画を読み込めませんでした。'); } }
+      finally { queue.busy = false; }
+    })();
+  }, [frame, ready, renderer]);
+  useEffect(() => () => { playRequest.current++; }, []);
   const canvasVisible = !!createFramePainter && ready && painted?.key === key && painted.width === size.width && painted.height === size.height;
 
   useEffect(() => {
@@ -45,7 +74,7 @@ function ProjectPlayback({ project, renderer, kernel, createFramePainter, onEdit
   }, []);
   useEffect(() => {
     let active = true;
-    setPlaying(false);
+    playRequest.current++; setPlaying(false); setPreparedFrame(null);
     void Promise.all(projectSegments(project).map(segment => renderer.prepareScene(segment.scene))).then(() => { if (active) { setPrepared(project); setError(''); } }, failure => { if (active) { setPlaying(false); setError(failure instanceof Error ? failure.message : 'Scene を読み込めませんでした。'); } });
     return () => { active = false; };
   }, [project, renderer]);
@@ -60,11 +89,16 @@ function ProjectPlayback({ project, renderer, kernel, createFramePainter, onEdit
     };
     request = requestAnimationFrame(tick); return () => cancelAnimationFrame(request);
   }, [playing, total]);
-  function seek(value: number) { setPlaying(false); setTime(clamp(value, 0, total)); }
-  function toggle() {
+  function seek(value: number) { playRequest.current++; setPlaying(false); setTime(clamp(value, 0, total)); }
+  async function toggle() {
+    const request = ++playRequest.current;
     if (playing) { setPlaying(false); return; }
     const position = time >= total ? 0 : time;
-    clock.current = { time: performance.now(), position }; setTime(position); setPlaying(true);
+    try {
+      await media.unlock();
+      if (request !== playRequest.current) return;
+      clock.current = { time: performance.now(), position }; setTime(position); setPlaying(true);
+    } catch (failure) { if (request === playRequest.current) setError(failure instanceof Error ? failure.message : '音声を再生できませんでした。'); }
   }
   function edit() {
     if (!scene) return;
@@ -75,7 +109,7 @@ function ProjectPlayback({ project, renderer, kernel, createFramePainter, onEdit
 
   return <>
     <div ref={viewport} className="project-preview-frame" data-testid="project-preview-frame" data-scene-id={scene?.id} style={{ aspectRatio: first ? `${first.width} / ${first.height}` : '16 / 9', background: frame?.background }}>
-      {scene && frame && createFramePainter && <CanvasFrame frame={frame} scene={scene} renderer={renderer} createFramePainter={createFramePainter} presentationKey={key} width={size.width} height={size.height} visible={canvasVisible} onPresent={setPainted}/>}
+      {scene && displayFrame && createFramePainter && <CanvasFrame frame={displayFrame} scene={scene} renderer={renderer} createFramePainter={createFramePainter} presentationKey={key} width={size.width} height={size.height} visible={canvasVisible} onPresent={setPainted}/>}
       {frame && ready && <div className="project-preview-svg" style={{ visibility: canvasVisible ? 'hidden' : 'visible' }} dangerouslySetInnerHTML={{ __html: svg }}/>}
       {!ready && !error && <div className="project-preview-loading" role="status"><LoaderCircle size={20} className="loading-spinner"/>Scene を準備しています…</div>}
     </div>

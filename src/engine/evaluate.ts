@@ -1,7 +1,7 @@
 import { clamp, orderedObjects, sceneSegments, type AnimationTrack, type Composition, type ObjectState, type Scene, type SceneObject, type Transition } from '../../shared/model';
 import type { MotionKernel } from './kernel';
 
-export interface RenderObject { object: SceneObject; state: ObjectState; writeProgress: number; order: 'together' | 'sequential' }
+export interface RenderObject { object: SceneObject; state: ObjectState; writeProgress: number; order: 'together' | 'sequential'; videoTimeMs?: number; videoFrame?: string }
 export interface Frame { objects: RenderObject[]; background: string; width: number; height: number }
 const easingIds = { linear: 0, easeInOut: 1, easeIn: 2, easeOut: 3 };
 
@@ -10,18 +10,31 @@ function color(from: string, to: string, t: number) {
   return '#' + [1, 3, 5].map(i => Math.round(parseInt(from.slice(i, i + 2), 16) * (1 - t) + parseInt(to.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('');
 }
 
-export function compositionFrame(scene: Scene, composition: Composition): Frame {
+function videoActive(object: SceneObject, time: number): boolean {
+  if (object.kind !== 'video' || !object.media) return true;
+  const playback = object.playback ?? { start: 0, offset: 0, duration: object.media.duration };
+  return time >= playback.start && time < playback.start + playback.duration;
+}
+
+function mediaTime(object: SceneObject, time: number): Pick<RenderObject, 'videoTimeMs'> {
+  if (object.kind !== 'video' || !object.media) return {};
+  const playback = object.playback ?? { start: 0, offset: 0, duration: object.media.duration };
+  return { videoTimeMs: playback.offset + clamp(time - playback.start, 0, playback.duration) };
+}
+
+export function compositionFrame(scene: Scene, composition: Composition, sceneTime = sceneSegments(scene).find(segment => segment.kind === 'composition' && segment.id === composition.id)?.start ?? 0): Frame {
   return { background: scene.background, width: scene.width, height: scene.height, objects: orderedObjects(scene).flatMap(object => {
     const state = composition.states[object.id];
-    return state?.visible ? [{ object, state, writeProgress: 1, order: 'together' as const }] : [];
+    return state?.visible ? [{ object, state, ...mediaTime(object, sceneTime), writeProgress: 1, order: 'together' as const }] : [];
   }) };
 }
 
-export function transitionFrame(scene: Scene, transition: Transition, time: number, kernel: MotionKernel): Frame {
+export function transitionFrame(scene: Scene, transition: Transition, time: number, kernel: MotionKernel, sceneTime = (sceneSegments(scene).find(segment => segment.kind === 'transition' && segment.id === transition.id)?.start ?? 0) + time): Frame {
   const from = scene.compositions[transition.fromId];
   const to = scene.compositions[transition.toId];
   if (!from || !to) return { background: scene.background, width: scene.width, height: scene.height, objects: [] };
   const objects = orderedObjects(scene).flatMap(object => {
+    if (!videoActive(object, sceneTime)) return [];
     const fromState = from.states[object.id];
     const toState = to.states[object.id];
     const aVisible = !!fromState?.visible;
@@ -45,7 +58,7 @@ export function transitionFrame(scene: Scene, transition: Transition, time: numb
     if (track.type !== 'write') state.opacity *= presence;
     else if (presence === 0) state.opacity = 0;
     if (track.type === 'grow' && (!aVisible || !bVisible)) { state.width *= presence; state.height *= presence; state.fontSize *= presence; }
-    return [{ object, state, writeProgress: track.type === 'write' ? (!bVisible ? 1 - progress : progress) : 1, order: track.order }];
+    return [{ object, state, ...mediaTime(object, sceneTime), writeProgress: track.type === 'write' ? (!bVisible ? 1 - progress : progress) : 1, order: track.order }];
   });
   return { background: scene.background, width: scene.width, height: scene.height, objects };
 }
@@ -55,5 +68,6 @@ export function evaluateScene(scene: Scene, time: number, kernel: MotionKernel):
   const final = segments.at(-1);
   if (!final) return { background: scene.background, width: scene.width, height: scene.height, objects: [] };
   const current = segments.find(segment => time < segment.start + segment.duration) ?? final;
-  return current.kind === 'composition' ? compositionFrame(scene, scene.compositions[current.id]) : transitionFrame(scene, scene.transitions[current.id], clamp(time - current.start, 0, current.duration), kernel);
+  const frame = current.kind === 'composition' ? compositionFrame(scene, scene.compositions[current.id], time) : transitionFrame(scene, scene.transitions[current.id], clamp(time - current.start, 0, current.duration), kernel, time);
+  return { ...frame, objects: frame.objects.filter(item => videoActive(item.object, time)) };
 }

@@ -22,6 +22,19 @@ export function initializeDocument(doc: Y.Doc, project: Project) {
   doc.transact(() => { for (const [key, value] of Object.entries(project)) root.set(key, toShared(value)); }, 'initialize');
 }
 
+/** Run on the authoritative server before sync; clients must not race to create this parent map. */
+export function ensureSceneAudioTracks(doc: Y.Doc): boolean {
+  const scenes = doc.getMap('project').get('scenes');
+  if (!(scenes instanceof Y.Map)) return false;
+  let changed = false;
+  doc.transact(() => {
+    for (const scene of scenes.values()) if (scene instanceof Y.Map && !scene.has('audioTracks')) {
+      scene.set('audioTracks', new Y.Map()); changed = true;
+    }
+  }, 'initialize-media');
+  return changed;
+}
+
 export function readProject(doc: Y.Doc): Project | null {
   const root = doc.getMap('project');
   return root.has('version') ? projectStructureView(root.toJSON() as Project) : null;

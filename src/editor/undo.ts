@@ -2,11 +2,13 @@ import * as Y from 'yjs';
 import { getShared, LOCAL_ORIGIN } from '../../shared/document';
 
 export class EditorUndoManager extends Y.UndoManager {
+  readonly peerEditedAudioTracks = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedTracks = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedObjects = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedCompositions = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedTransitions = new WeakSet<Y.Map<unknown>>();
   readonly retainedCreationTracks = new WeakSet<Y.Map<unknown>>();
+  lastUndoPreservedAudioTracks = 0;
   lastUndoPreservedObjects = 0;
   lastUndoPreservedDurations = 0;
   lastUndoPreservedCompositions = 0;
@@ -21,6 +23,13 @@ export class EditorUndoManager extends Y.UndoManager {
         if (object instanceof Y.Map) this.peerEditedObjects.add(object);
       };
       const changedKeys = event instanceof Y.YMapEvent ? [...event.keysChanged] : [];
+      if (path[2] === 'audioTracks') {
+        for (const id of path.length === 3 ? changedKeys : [path[3]]) {
+          const track = getShared(this.doc, ['scenes', path[1], 'audioTracks', id]);
+          if (track instanceof Y.Map) this.peerEditedAudioTracks.add(track);
+        }
+        continue;
+      }
       const parents = path[2] === 'compositions' ? this.peerEditedCompositions : path[2] === 'transitions' ? this.peerEditedTransitions : null;
       if (parents) for (const id of path.length === 3 ? changedKeys : [path[3]]) {
         const parent = getShared(this.doc, ['scenes', path[1], path[2], id]);
@@ -63,6 +72,8 @@ export class EditorUndoManager extends Y.UndoManager {
 
 function sharedCreations(manager: EditorUndoManager) {
   const action = manager.undoStack.at(-1);
+  const protectedAudioTracks = new Set<Y.Map<unknown>>();
+  const containers = new Set<Y.Map<unknown>>();
   const protectedTracks = new Set<Y.Map<unknown>>();
   const protectedObjects = new Set<Y.Map<unknown>>();
   const dependentTracks = new Set<Y.Map<unknown>>();
@@ -76,6 +87,15 @@ function sharedCreations(manager: EditorUndoManager) {
     // Yjs's integrated _item identifies each map in the Undo insertion clocks.
     // Keep this dependency on Item metadata local to creation detection.
     const added = (value: unknown) => value instanceof Y.Map && !!value._item && Y.isDeleted(action.insertions, value._item.id);
+    const audioTracks = scene.get('audioTracks');
+    // Legacy Scenes may acquire the optional collection in this same action.
+    // Retain the collection identity only, so its other untouched children still Undo.
+    if (!added(scene) && audioTracks instanceof Y.Map) for (const track of audioTracks.values()) {
+      if (track instanceof Y.Map && added(track) && manager.peerEditedAudioTracks.has(track)) {
+        protectedAudioTracks.add(track); roots.add(track);
+        if (added(audioTracks)) containers.add(audioTracks);
+      }
+    }
     const objects = scene.get('objects');
     const compositions = scene.get('compositions');
     const transitions = scene.get('transitions');
@@ -161,7 +181,7 @@ function sharedCreations(manager: EditorUndoManager) {
       if (source instanceof Y.Map && !added(source) && source.get('deleted') !== true && fieldAfterUndo(manager, action, source, 'deleted') === true) revivedCompositions.add(source);
     }
   }
-  return { roots, dependentTracks, orderEntries, revivedCompositions, compositions: protectedCompositions.size, tracks: protectedTracks.size, objects: protectedObjects.size };
+  return { roots, containers, audioTracks: protectedAudioTracks.size, dependentTracks, orderEntries, revivedCompositions, compositions: protectedCompositions.size, tracks: protectedTracks.size, objects: protectedObjects.size };
 }
 
 type UndoAction = EditorUndoManager['undoStack'][number];
@@ -256,6 +276,7 @@ function protectedStep(manager: EditorUndoManager, direction: 'undo' | 'redo', c
   if (omitted.length) action.deletions = withoutItems(previousDeletions, omitted);
   const priorFilter = manager.deleteFilter;
   manager.deleteFilter = item => {
+    if (item.content instanceof Y.ContentType && item.content.type instanceof Y.Map && creations.containers.has(item.content.type)) return false;
     if (item.parentSub === 'duration' && item.parent instanceof Y.Map && durations.has(item.parent)) return false;
     if (item.parentSub === 'deleted' && item.parent instanceof Y.Map && creations.revivedCompositions.has(item.parent)) return false;
     if (item.parent instanceof Y.Array) {
@@ -287,6 +308,7 @@ function protectedStep(manager: EditorUndoManager, direction: 'undo' | 'redo', c
 
 /** Undo one local action; retain shared creations and report their track count. */
 export function undoPreservingPeerTracks(manager: EditorUndoManager): number {
+  manager.lastUndoPreservedAudioTracks = 0;
   manager.lastUndoPreservedObjects = 0;
   manager.lastUndoPreservedDurations = 0;
   manager.lastUndoPreservedCompositions = 0;
@@ -296,6 +318,7 @@ export function undoPreservingPeerTracks(manager: EditorUndoManager): number {
     const result = protectedStep(manager, 'undo', protectedCreations, durations);
     if (protectedCreations.roots.size || durations.size) {
       for (const track of protectedCreations.dependentTracks) manager.retainedCreationTracks.add(track);
+      manager.lastUndoPreservedAudioTracks = protectedCreations.audioTracks;
       manager.lastUndoPreservedObjects = protectedCreations.objects;
       manager.lastUndoPreservedDurations = durations.size;
       manager.lastUndoPreservedCompositions = protectedCreations.compositions;
@@ -309,7 +332,7 @@ export function undoPreservingPeerTracks(manager: EditorUndoManager): number {
 
 /** Redo normally unless a shorter duration would truncate a peer's animation. */
 export function redoPreservingPeerDurations(manager: EditorUndoManager): number {
-  const creations = { roots: new Set<Y.Map<unknown>>(), dependentTracks: new Set<Y.Map<unknown>>(), orderEntries: new Map<Y.Array<unknown>, Set<string>>(), revivedCompositions: new Set<Y.Map<unknown>>(), objects: 0, tracks: 0, compositions: 0 };
+  const creations = { roots: new Set<Y.Map<unknown>>(), containers: new Set<Y.Map<unknown>>(), audioTracks: 0, dependentTracks: new Set<Y.Map<unknown>>(), orderEntries: new Map<Y.Array<unknown>, Set<string>>(), revivedCompositions: new Set<Y.Map<unknown>>(), objects: 0, tracks: 0, compositions: 0 };
   while (manager.canRedo()) {
     const action = manager.redoStack.at(-1)!;
     const durations = requiredDurations(manager, creations, action);

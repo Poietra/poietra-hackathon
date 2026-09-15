@@ -9,6 +9,8 @@ import { arrowHeadPath, arrowHeadProgress, numberlineTickPath, numberlineTickPro
 import { color, escapeXml, finite, number as n, safeId, unit } from './rendering/svg';
 import { prepareImages, preparedImage } from './rendering/images';
 
+export { prepareVideoFrame as prepareFrame } from './rendering/videos';
+
 let nextSvg = 0;
 
 /** Precompute local equation paths once per content change; frame rendering remains synchronous. */
@@ -85,8 +87,8 @@ function shapeMarkup(item: RenderObject, prefix: string): string {
   const s = item.state, kind = item.object.kind, progress = unit(item.writeProgress);
   const draw = progress < 1 ? ` pathLength="1" stroke-dasharray="1" stroke-dashoffset="${n(1 - progress)}"` : '';
   if (kind === 'text') return textMarkup(item, prefix);
-  if (kind === 'image') {
-    const src = preparedImage(item.object.image?.src);
+  if (kind === 'image' || kind === 'video') {
+    const src = kind === 'video' ? item.videoFrame : preparedImage(item.object.image?.src);
     if (!src) return '';
     const width = Math.abs(finite(s.width)), height = Math.abs(finite(s.height));
     const x = -width / 2, y = -height / 2, radius = Math.max(0, Math.min(finite(s.cornerRadius), width / 2, height / 2));

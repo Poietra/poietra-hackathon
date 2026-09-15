@@ -29,6 +29,9 @@ function copyScene(source: Scene): Scene {
   const groupIds = new Map([...new Set(Object.values(source.objects).flatMap(object => object.groupId ? [object.groupId] : []))].map(id => [id, newId('group')]));
   const copy: Scene = {
     ...structuredClone(source), id: newId('scene'), name: `${source.name.slice(0, 195)} copy`,
+    audioTracks: Object.fromEntries(Object.values(source.audioTracks ?? {}).map(track => {
+      const id = newId('audio'); return [id, { ...structuredClone(track), id }];
+    })),
     compositionOrder: source.compositionOrder.map(id => compositionIds.get(id)!),
     objects: Object.fromEntries(Object.entries(source.objects).map(([id, object]) => {
       const copyId = objectIds.get(id)!;

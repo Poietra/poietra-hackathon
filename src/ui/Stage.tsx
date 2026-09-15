@@ -5,6 +5,8 @@ import type { Frame } from '../engine/evaluate';
 import { defaultState, type ObjectKind, type ObjectState } from '../../shared/model';
 import { cn } from './utils';
 import { CanvasFrame, type CanvasPresentation } from './CanvasFrame';
+import { OperationFeedback, useOperationFeedback, type OperationStatus } from './OperationFeedback';
+import { usePreparedStageFrame } from './usePreparedStageFrame';
 import './Stage.css';
 
 interface Gesture {
@@ -23,6 +25,8 @@ interface Gesture {
   initialSize?: { width: number; height: number };
   undoItem?: object;
   undoBefore?: object;
+  changed?: boolean;
+  feedback?: OperationStatus;
 }
 
 export function Stage({ frame, compositionId, interactive = true, stateEditing = true, prefix = 'main', zoom = 1 }: { frame: Frame; compositionId: string; interactive?: boolean; stateEditing?: boolean; prefix?: string; zoom?: number }) {
@@ -36,6 +40,8 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
   const [marquee, setMarquee] = useState<Rectangle | null>(null);
   const [drawPreview, setDrawPreview] = useState<ObjectState | null>(null);
   const [painted, setPainted] = useState<CanvasPresentation | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const { feedback, report } = useOperationFeedback(`${scene.id}:${compositionId}:${prefix}`);
   useEffect(() => {
     const node = container.current; if (!node) return;
     const observer = new ResizeObserver(([entry]) => { const scale = Math.min(entry.contentRect.width / frame.width, entry.contentRect.height / frame.height) * zoom; setSize({ width: frame.width * scale, height: frame.height * scale }); });
@@ -53,6 +59,8 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     if (current.marquee) { if (cancel) editor.setSelectedIds(current.marquee.initial); }
     else store.endGesture();
     setDrawPreview(null); setMarquee(null);
+    if (current.changed || current.drawing) report({ kind: cancel ? 'cancelled' : 'complete', label: cancel ? '操作をキャンセル' : current.drawing ? 'オブジェクトを追加' : current.marquee ? '範囲を選択' : '変更を確定', detail: cancel ? undefined : current.feedback?.detail });
+    else report(null);
     if (surface.current?.hasPointerCapture(current.pointer)) surface.current.releasePointerCapture(current.pointer);
   }
 
@@ -85,7 +93,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       const item = displayedFrame.objects[index];
       if (!item.state.visible || item.state.opacity <= 0 || item.writeProgress <= 0) continue;
       if (item.object.id === direct) return direct!;
-      if ((item.object.kind === 'text' || item.object.kind === 'equation' || item.object.kind === 'image') && pointInRotatedBounds(at, renderer.objectBounds(item), item.state)) return item.object.id;
+      if (['text', 'equation', 'image', 'video'].includes(item.object.kind) && pointInRotatedBounds(at, renderer.objectBounds(item), item.state)) return item.object.id;
     }
     return undefined;
   }
@@ -108,6 +116,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     const currentScene = store.scene(scene.id);
     const start = point(event), target = event.target as Element;
     const base: Gesture = { pointer: event.pointerId, sceneId: scene.id, compositionId, start, undoBefore: store.undoManager.undoStack.at(-1) };
+    setHoverId(null); report(null);
     const handle = target.closest('[data-path-handle]')?.getAttribute('data-path-handle') as 'c1' | 'c2' | null;
     const transform = target.closest('[data-transform-handle]')?.getAttribute('data-transform-handle') as Gesture['transform'];
     if (handle && selectedObject) {
@@ -141,7 +150,21 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       for (const objectId of store.linkedIds(scene.id, ids)) { const state = currentScene.compositions[compositionId]?.states[objectId]; if (state?.visible) positions[objectId] = { x: state.x, y: state.y }; }
       gesture.current = { ...base, positions };
     }
+    updateFeedback(gesture.current!, start);
     store.beginGesture(); event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault();
+  }
+
+  function updateFeedback(current: Gesture, at: Point, state?: Partial<ObjectState>) {
+    const coordinate = (value: number) => Math.round(value).toLocaleString('en-US');
+    let label = '移動', detail = `ΔX ${coordinate(at.x-current.start.x)} · ΔY ${coordinate(at.y-current.start.y)}`;
+    if (current.drawing) { label = 'オブジェクトを描画'; detail = `${coordinate(Math.abs(at.x-current.start.x))} × ${coordinate(Math.abs(at.y-current.start.y))} px`; }
+    else if (current.marquee) { label = current.marquee.additive ? '選択に追加' : '範囲を選択'; detail = 'ドラッグで囲む · Esc で戻す'; }
+    else if (current.handle) { label = 'ベジェ曲線を調整'; detail = `X ${coordinate(at.x)} · Y ${coordinate(at.y)}`; }
+    else if (current.transform === 'rotate') { label = '回転'; detail = `${coordinate(state?.rotation ?? current.initialState?.rotation ?? 0)}° · Shift で角度を固定`; }
+    else if (current.transform) { label = 'サイズを変更'; detail = state?.fontSize !== undefined ? `${coordinate(state.fontSize)} px` : `${coordinate(state?.width ?? current.initialState?.width ?? 0)} × ${coordinate(state?.height ?? current.initialState?.height ?? 0)} px`; }
+    else if (Object.keys(current.positions || {}).length > 1) label = `${Object.keys(current.positions!).length} 個を移動`;
+    current.feedback = { kind: 'active', label, detail };
+    report(current.feedback);
   }
 
   function preview(kind: ObjectKind, start: Point, end: Point, shift: boolean): ObjectState {
@@ -155,7 +178,9 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
     const at = point(event);
     if (!gesture.current && surface.current) {
       const id = tool === 'select' && canEdit ? hitObject(at, event.target as Element) : undefined;
-      surface.current.style.cursor = id && !scene.objects[id]?.locked ? 'move' : '';
+      setHoverId(id || null);
+      const handle = (event.target as Element).closest('[data-transform-handle], [data-path-handle]');
+      surface.current.style.cursor = handle ? '' : id ? scene.objects[id]?.locked ? 'not-allowed' : stateEditing ? 'move' : 'default' : '';
     }
     if (performance.now() - cursorTime.current > 40) { cursorTime.current = performance.now(); store.presence({ sceneId: scene.id, compositionId, cursor: at }); }
     const current = gesture.current; if (!current || current.pointer !== event.pointerId) return;
@@ -163,30 +188,36 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       // The threshold is in screen pixels, so zoom does not change click behavior.
       if (!current.marquee.active && Math.hypot(at.x - current.start.x, at.y - current.start.y) < 4 * scale) return;
       current.marquee.active = true;
+      current.changed = true;
       const rectangle = rectangleFromPoints(current.start, at); setMarquee(rectangle);
       const enclosed = displayedFrame.objects.filter(item => scene.objects[item.object.id] && item.state.visible && item.state.opacity > 0 && item.writeProgress > 0 && rectangleContainsRotatedBounds(rectangle, renderer.objectBounds(item), item.state)).map(item => item.object.id);
       editor.setSelectedIds(current.marquee.additive ? [...new Set([...current.marquee.initial, ...enclosed])] : enclosed);
+      current.feedback = { kind: 'active', label: current.marquee.additive ? '選択に追加' : '範囲を選択', detail: `${current.marquee.additive ? new Set([...current.marquee.initial, ...enclosed]).size : enclosed.length} 個 · Esc で戻す` }; report(current.feedback);
       return;
     }
-    if (current.drawing) { setDrawPreview(preview(current.drawing, current.start, at, event.shiftKey)); return; }
+    if (current.drawing) { const state = preview(current.drawing, current.start, at, event.shiftKey); setDrawPreview(state); updateFeedback(current, { x: current.start.x + state.width, y: current.start.y + state.height }); return; }
     const currentScene = store.scene(current.sceneId);
     const currentObject = current.objectId ? currentScene.objects[current.objectId] : null;
     if (current.objectId && (!currentObject || currentObject.locked)) { finish(true); return; }
+    current.changed = current.changed || Math.hypot(at.x - current.start.x, at.y - current.start.y) > scale;
     if (current.handle && current.objectId) {
       const track = current.transitionId ? currentScene.transitions[current.transitionId]?.tracks[current.objectId] : null;
       const state = currentScene.compositions[current.compositionId]?.states[current.objectId];
       if (current.transitionId && track?.path) store.setTrack(current.sceneId, current.transitionId, current.objectId, { path: { ...track.path, [current.handle]: at } }, false);
       else if (!current.transitionId && state) store.updateState(current.sceneId, current.compositionId, current.objectId, { path: { ...state.path, [current.handle]: worldToLocal(at, state) } }, false);
+      updateFeedback(current, at);
     } else if (current.transform && current.objectId && current.initialState && current.initialSize) {
       const patch = current.transform === 'rotate'
         ? { rotation: rotationFromPointer(current.initialState, current.start, at, event.shiftKey) }
-        : resizeFromCorner(current.initialState, current.initialSize, current.transform, { x: at.x - current.start.x, y: at.y - current.start.y }, currentObject?.kind === 'image' ? !event.shiftKey : event.shiftKey, currentObject?.kind === 'text' || currentObject?.kind === 'equation');
+        : resizeFromCorner(current.initialState, current.initialSize, current.transform, { x: at.x - current.start.x, y: at.y - current.start.y }, ['image', 'video'].includes(currentObject?.kind || '') ? !event.shiftKey : event.shiftKey, currentObject?.kind === 'text' || currentObject?.kind === 'equation');
       store.updateState(current.sceneId, current.compositionId, current.objectId, patch, false);
+      updateFeedback(current, at, patch);
     } else {
       let dx = at.x - current.start.x, dy = at.y - current.start.y;
       if (event.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
       const positions = Object.fromEntries(Object.entries(current.positions || {}).filter(([id]) => !currentScene.objects[id]?.locked));
       store.translate(current.sceneId, current.compositionId, positions, dx, dy);
+      updateFeedback(current, { x: current.start.x + dx, y: current.start.y + dy });
     }
     current.undoItem = store.undoManager.undoStack.at(-1);
   }
@@ -206,20 +237,26 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
   const drawingKind = gesture.current?.drawing;
   const drawnFrame = useMemo<Frame>(() => drawPreview && drawingKind ? { ...frame, objects: [...frame.objects, { object: { id: 'drawing-preview', kind: drawingKind, name: '', groupId: null, locked: false, order: 999 }, state: drawPreview, writeProgress: 1, order: 'together' }] } : frame, [frame, drawPreview, drawingKind]);
   const presentationKey = `${scene.id}:${compositionId}:${prefix}:${frame.width}:${frame.height}:${interactive}:${stateEditing}:${drawingKind || 'idle'}`;
+  const prepared = usePreparedStageFrame(drawnFrame, renderer, presentationKey);
   const canvasVisible = !!createFramePainter && painted?.key === presentationKey && painted.width === size.width && painted.height === size.height;
-  const displayedFrame = canvasVisible ? painted!.frame : drawnFrame;
+  const displayedFrame = canvasVisible ? painted!.frame : prepared.frame;
   const selection = displayedFrame.objects.filter(item => selectedIds.includes(item.object.id) && item.state.visible && item.state.opacity > 0 && item.writeProgress > 0);
-  return <div className="stage-container" ref={container}><div ref={surface} tabIndex={-1} className={cn('stage-surface', tool !== 'select' && canEdit && stateEditing && 'drawing')} style={{ width: size.width, height: size.height }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onDoubleClick={doubleClick} onPointerCancel={() => finish(true)} onLostPointerCapture={() => finish(true)} onPointerLeave={() => { if (!gesture.current) store.presence({ cursor: null }); }} data-testid={`stage-${prefix}`}>
-    {createFramePainter && <CanvasFrame frame={drawnFrame} scene={scene} renderer={renderer} createFramePainter={createFramePainter} presentationKey={presentationKey} width={size.width} height={size.height} visible={canvasVisible} onPresent={setPainted} />}
+  const hovered = canEdit && tool === 'select' && !gesture.current ? displayedFrame.objects.find(item => item.object.id === hoverId) : undefined;
+  const idleObject = hovered?.object || (selection.length === 1 ? selection[0].object : null);
+  const idleLocked = idleObject && scene.objects[idleObject.id]?.locked;
+  const idleStatus: OperationStatus | null = idleObject ? { kind: idleLocked ? 'locked' : 'idle', label: idleObject.name, detail: idleLocked ? 'ロック中 · 選択のみ' : !stateEditing ? 'プレビュー · 選択のみ' : ['text', 'equation'].includes(idleObject.kind) ? 'ダブルクリックで編集' : 'ドラッグで移動' } : selection.length > 1 ? { kind: 'idle', label: `${selection.length} 個を選択`, detail: 'Shift で選択を追加・解除' } : null;
+  return <div className="stage-container" ref={container}><div ref={surface} tabIndex={-1} aria-label={`${scene.compositions[compositionId]?.name || 'Composition'} のキャンバス`} className={cn('stage-surface', tool !== 'select' && canEdit && stateEditing && 'drawing', feedback?.kind === 'active' && 'is-manipulating')} data-gesture={feedback?.kind === 'active' ? gesture.current?.transform || (gesture.current?.handle ? 'path' : gesture.current?.drawing ? 'draw' : gesture.current?.marquee ? 'marquee' : 'move') : undefined} style={{ width: size.width, height: size.height }} onPointerDown={down} onPointerMove={move} onPointerUp={up} onDoubleClick={doubleClick} onPointerCancel={() => finish(true)} onLostPointerCapture={() => finish(true)} onPointerLeave={() => { if (!gesture.current) { store.presence({ cursor: null }); setHoverId(null); if (surface.current) surface.current.style.cursor = ''; } }} data-testid={`stage-${prefix}`}>
+    {createFramePainter && <CanvasFrame frame={prepared.frame} scene={scene} renderer={renderer} createFramePainter={createFramePainter} presentationKey={presentationKey} width={size.width} height={size.height} visible={canvasVisible} onPresent={setPainted} />}
     <div className={cn('scene-svg', canvasVisible && 'scene-hit-svg')} dangerouslySetInnerHTML={{ __html: renderer.frameToSvg(displayedFrame, { idPrefix: prefix }) }} />
     <svg className="stage-overlay" viewBox={`0 0 ${frame.width} ${frame.height}`} aria-hidden="true">
+      {hovered && !selectedIds.includes(hovered.object.id) && (() => { const b = renderer.objectBounds(hovered); return <rect data-hover-id={hovered.object.id} transform={`rotate(${hovered.state.rotation} ${hovered.state.x} ${hovered.state.y})`} x={b.x} y={b.y} width={Math.max(1,b.width)} height={Math.max(1,b.height)} fill="none" stroke={scene.objects[hovered.object.id]?.locked ? '#aaa6b9' : '#9696eb'} strokeOpacity="0.7" strokeWidth={scale} strokeDasharray={`${4*scale} ${3*scale}`}/>; })()}
       {canEdit && selection.map(item => {
         const b = renderer.objectBounds(item);
         const locked = !!scene.objects[item.object.id]?.locked;
         const editable = stateEditing && !locked && selectedIds.length === 1 && tool === 'select';
-        const resizable = editable && ['circle', 'rectangle', 'text', 'equation', 'image'].includes(item.object.kind);
-        return <g key={item.object.id} data-selection-id={item.object.id} transform={`rotate(${item.state.rotation} ${item.state.x} ${item.state.y})`}>
-          <rect x={b.x} y={b.y} width={Math.max(1, b.width)} height={Math.max(1, b.height)} fill="none" stroke={locked ? '#7e7e87' : '#9696eb'} strokeWidth={scale} />
+        const resizable = editable && ['circle', 'rectangle', 'text', 'equation', 'image', 'video'].includes(item.object.kind);
+        return <g key={item.object.id} data-selection-id={item.object.id} data-locked={locked || undefined} transform={`rotate(${item.state.rotation} ${item.state.x} ${item.state.y})`}>
+          <rect x={b.x} y={b.y} width={Math.max(1, b.width)} height={Math.max(1, b.height)} fill="none" stroke={locked ? '#aaa6b9' : '#9696eb'} strokeWidth={scale} strokeDasharray={locked ? `${4*scale} ${3*scale}` : undefined}/>
           {resizable && (Object.entries(CORNER_SIGNS) as [ResizeCorner, Point][]).map(([corner, sign]) => {
             const x = b.x + (sign.x + 1) * b.width / 2, y = b.y + (sign.y + 1) * b.height / 2;
             return <g key={corner} data-transform-handle={corner} style={{ pointerEvents: 'all', cursor: corner === 'nw' || corner === 'se' ? 'nwse-resize' : 'nesw-resize' }}><rect x={x-8*scale} y={y-8*scale} width={16*scale} height={16*scale} fill="transparent"/><rect x={x-3*scale} y={y-3*scale} width={6*scale} height={6*scale} fill="#181820" stroke="#a9a7fb" strokeWidth={scale}/></g>;
@@ -232,5 +269,7 @@ export function Stage({ frame, compositionId, interactive = true, stateEditing =
       {marquee && <rect data-testid="selection-marquee" x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} fill="#9696eb" fillOpacity="0.12" stroke="#9696eb" strokeWidth={scale} />}
       {editor.peers.filter(peer => peer.clientId !== store.doc.clientID && peer.sceneId === scene.id && peer.compositionId === compositionId && peer.cursor).map(peer => <g key={peer.clientId} transform={`translate(${peer.cursor!.x} ${peer.cursor!.y}) scale(${scale})`}><path d="M0 0 L0 17 L5 12 L9 21 L12 19 L8 11 L16 11 Z" fill={peer.color} stroke="#15151b" strokeWidth="1"/><rect x="17" y="14" width={peer.name.length*6.5+12} height="20" rx="4" fill={peer.color}/><text x="23" y="28" fill="#15151b" fontSize="11" fontFamily="Arial">{peer.name}</text></g>)}
     </svg>
+    {canEdit && <OperationFeedback status={idleLocked && feedback?.kind !== 'active' && feedback?.kind !== 'cancelled' ? idleStatus : feedback || idleStatus} className="stage-feedback"/>}
+    {(prepared.error || !prepared.ready) && <div className="stage-media-status" role={prepared.error ? 'alert' : 'status'}>{prepared.error ? '動画フレームを読み込めませんでした' : '動画フレームを準備中'}</div>}
   </div></div>;
 }

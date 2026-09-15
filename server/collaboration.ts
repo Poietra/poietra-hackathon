@@ -6,7 +6,7 @@ import * as decoding from 'lib0/decoding';
 import { WebSocket } from 'ws';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { initializeDocument } from '../shared/document';
+import { ensureSceneAudioTracks, initializeDocument } from '../shared/document';
 import { makeDemoProject } from '../shared/demo';
 import { presenceMessage, readPresenceUpdate, type Presence } from '../worker/presence';
 
@@ -29,6 +29,7 @@ export class Room {
     this.awareness.setLocalState(null);
     if (existsSync(this.filename)) Y.applyUpdate(this.doc, new Uint8Array(readFileSync(this.filename)));
     else initializeDocument(this.doc, makeDemoProject());
+    ensureSceneAudioTracks(this.doc);
     this.doc.on('update', (update: Uint8Array) => {
       const encoder = encoding.createEncoder();
       encoding.writeVarUint(encoder, 0); sync.writeUpdate(encoder, update);
@@ -88,6 +89,7 @@ export class Room {
           const reply = encoding.createEncoder();
           encoding.writeVarUint(reply, 0);
           sync.readSyncMessage(decoder, reply, this.doc, socket);
+          ensureSceneAudioTracks(this.doc);
           if (encoding.length(reply) > 1 && socket.readyState === WebSocket.OPEN) socket.send(encoding.toUint8Array(reply));
         } else if (type === 1) {
           const previous = this.presence.get(socket) ?? null;
