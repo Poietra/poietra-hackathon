@@ -34,7 +34,7 @@ export function ProjectDialog({ open, onOpenChange, project }: { open: boolean; 
     try {
       const snapshot = await portableProject(project, request.signal); request.signal.throwIfAborted();
       const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
-      if (blob.size > PROJECT_FILE_LIMIT) throw new Error('保存する画像や Scene を減らして、32 MB 以下にしてください。');
+      if (blob.size > PROJECT_FILE_LIMIT) throw new Error(`保存する素材や Scene を減らして、${PROJECT_FILE_LIMIT / 1024 / 1024} MB 以下にしてください。`);
       download(blob, `${snapshot.name.replace(/[\\/:*?"<>|]/g, '_')}.poietra.json`);
     } catch (error) { if (!request.signal.aborted) setError(error instanceof Error ? error.message : '保存できませんでした。'); }
     finally { if (controller.current === request) { controller.current = null; setBusy(false); } }
@@ -52,7 +52,7 @@ export function ProjectDialog({ open, onOpenChange, project }: { open: boolean; 
       <input ref={file} type="file" aria-label="プロジェクトファイル" accept=".json,.poietra.json,application/json" hidden onChange={event => {
         const selected = event.currentTarget.files?.[0]; event.currentTarget.value = '';
         if (selected) void start(async () => {
-          if (selected.size > PROJECT_FILE_LIMIT) throw new Error('プロジェクトファイルは 32 MB 以下にしてください。');
+          if (selected.size > PROJECT_FILE_LIMIT) throw new Error(`プロジェクトファイルは ${PROJECT_FILE_LIMIT / 1024 / 1024} MB 以下にしてください。`);
           return parseProjectFile(await selected.text());
         });
       }}/>

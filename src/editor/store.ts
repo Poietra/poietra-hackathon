@@ -7,6 +7,7 @@ import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Co
 import { applyProposal, type EditProposal } from '../../shared/ai';
 import { RoomChat } from '../../shared/chat';
 import { ImageAssetSchema, type ImageAsset } from '../../shared/images';
+import { AudioTrackSchema, MediaAssetSchema, MediaPlaybackSchema, type AudioTrack, type MediaAsset, type MediaPlayback } from '../../shared/media';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
 import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
 
@@ -147,6 +148,7 @@ export class EditorStore {
   beginGesture() { this.undoManager.stopCapturing(); this.undoManager.captureTimeout = Infinity; }
   endGesture() { this.undoManager.captureTimeout = 400; this.undoManager.stopCapturing(); }
   get lastUndoPreservedObjects() { return this.undoManager.lastUndoPreservedObjects; }
+  get lastUndoPreservedAudioTracks() { return this.undoManager.lastUndoPreservedAudioTracks; }
   get lastUndoPreservedCompositions() { return this.undoManager.lastUndoPreservedCompositions; }
   get lastUndoPreservedDurations() { return this.undoManager.lastUndoPreservedDurations; }
   undo() {
@@ -197,6 +199,52 @@ export class EditorStore {
     for (const composition of Object.values(scene.compositions)) changes.push({ path: ['scenes', sceneId, 'compositions', composition.id, 'states', id], value: { ...state, visible: composition.id === compositionId } });
     this.edit(changes);
     return id;
+  }
+
+  addMedia(sceneId: string, compositionId: string, asset: MediaAsset, kind: 'audio' | 'video', name: string, start = 0, point?: { x: number; y: number }) {
+    const scene = this.scene(sceneId);
+    MediaAssetSchema.parse(asset);
+    if (!scene.compositions[compositionId]) throw new Error('追加先の場面が削除されました。');
+    if ((kind === 'audio' || asset.hasAudio) && !(getShared(this.doc, ['scenes', sceneId, 'audioTracks']) instanceof Y.Map)) throw new Error('音声トラックを準備しています。同期完了後にもう一度追加してください。');
+    if ((kind === 'audio' || asset.hasAudio) && Object.keys(scene.audioTracks ?? {}).length >= 100) throw new Error('音声トラックは 100 件まで追加できます。');
+    const playback = MediaPlaybackSchema.parse({ start: Math.max(0, start), offset: 0, duration: asset.duration });
+    const changes: Change[] = [];
+    let objectId: string | undefined, audioTrackId: string | undefined;
+    if (kind === 'video') {
+      if (!asset.width || !asset.height) throw new Error('動画のサイズ情報がありません。');
+      objectId = newId();
+      const scale = Math.min(1, scene.width * 0.75 / asset.width, scene.height * 0.75 / asset.height);
+      const state = defaultState('video', { x: point?.x ?? scene.width / 2, y: point?.y ?? scene.height / 2, width: asset.width * scale, height: asset.height * scale, cornerRadius: 0, fill: 'none', strokeWidth: 0 });
+      changes.push({ path: ['scenes', sceneId, 'objects', objectId], value: { id: objectId, name: name.slice(0, 200), kind, media: asset, playback, order: Math.max(-1, ...Object.values(scene.objects).map(object => object.order)) + 1, groupId: null, locked: false } });
+      const first = scene.compositionOrder.indexOf(compositionId);
+      for (const [index, id] of scene.compositionOrder.entries()) changes.push({ path: ['scenes', sceneId, 'compositions', id, 'states', objectId], value: { ...state, visible: index >= first } });
+    }
+    if (kind === 'audio' || asset.hasAudio) {
+      audioTrackId = newId('audio');
+      const track = AudioTrackSchema.parse({ id: audioTrackId, name: `${name}${kind === 'video' ? ' · Audio' : ''}`.slice(0, 200), asset, ...playback, volume: 1, muted: false });
+      changes.push({ path: ['scenes', sceneId, 'audioTracks', audioTrackId], value: track });
+    }
+    this.edit(changes);
+    return { objectId, audioTrackId };
+  }
+
+  setAudioTrack(sceneId: string, id: string, patch: Partial<Pick<AudioTrack, 'name' | 'start' | 'offset' | 'duration' | 'volume' | 'muted'>>, separate = true) {
+    const track = this.scene(sceneId).audioTracks?.[id];
+    if (!track) return;
+    AudioTrackSchema.parse({ ...track, ...patch });
+    this.edit(changesFor(['scenes', sceneId, 'audioTracks', id], patch), separate);
+  }
+
+  removeAudioTrack(sceneId: string, id: string) {
+    if (this.scene(sceneId).audioTracks?.[id]) this.edit([{ path: ['scenes', sceneId, 'audioTracks', id], value: undefined }]);
+  }
+
+  setVideoPlayback(sceneId: string, id: string, patch: Partial<MediaPlayback>, separate = true) {
+    const object = this.scene(sceneId).objects[id];
+    if (!object?.media || object.kind !== 'video' || object.locked) return;
+    const playback = MediaPlaybackSchema.parse({ ...(object.playback ?? { start: 0, offset: 0, duration: object.media.duration }), ...patch });
+    if (playback.offset + playback.duration > object.media.duration + 1) throw new Error('素材の長さを超えないようにトリミングしてください。');
+    this.edit(object.playback ? changesFor(['scenes', sceneId, 'objects', id, 'playback'], patch) : [{ path: ['scenes', sceneId, 'objects', id, 'playback'], value: playback }], separate);
   }
 
   addScene() {

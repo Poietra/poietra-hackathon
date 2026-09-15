@@ -81,7 +81,7 @@ const sameValue = (first: unknown, second: unknown): boolean => {
 };
 
 export function validateStateValue(property: string, value: unknown, kind?: ObjectKind): void {
-  if (kind === 'image' && ['fill', 'text', 'fontSize'].includes(property)) throw new Error('画像の色や内容は変更できません。配置・サイズ・表示・動きを調整してください。');
+  if ((kind === 'image' || kind === 'video') && ['fill', 'text', 'fontSize'].includes(property)) throw new Error(`${kind === 'video' ? '動画' : '画像'}の色や内容は変更できません。配置・サイズ・表示・動きを調整してください。`);
   if (['fill', 'stroke'].includes(property)) { z.string().regex(/^#[a-f\d]{6}$/i).parse(value); return; }
   if (property === 'text') { z.string().max(3000).parse(value); return; }
   if (property === 'effect') { z.enum(['none', 'glow']).parse(value); return; }

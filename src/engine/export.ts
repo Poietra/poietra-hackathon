@@ -1,6 +1,8 @@
-import { BufferTarget, CanvasSource, Mp4OutputFormat, Output, WebMOutputFormat } from 'mediabunny';
-import { sceneSegments, type Project, type Scene } from '../../shared/model';
+import { AudioBufferSource, canEncodeAudio, BufferTarget, CanvasSource, Mp4OutputFormat, Output, WebMOutputFormat } from 'mediabunny';
+import { sceneDuration, type Project, type Scene } from '../../shared/model';
 import { projectSegments, projectSegmentAt } from '../../shared/project-timeline';
+import type { AudioTrack } from '../../shared/media';
+import { AudioMixer, AUDIO_SAMPLE_RATE, audibleTracks } from './audio';
 import { evaluateScene, type Frame } from './evaluate';
 import type { MotionKernel } from './kernel';
 import type { FramePainter } from './painter-contract';
@@ -34,6 +36,7 @@ function dimensions(scene: Pick<Scene, 'width' | 'height'>, options: ExportOptio
 interface VideoTimeline {
   size: Pick<Scene, 'width' | 'height'>;
   durations: number[];
+  audio: AudioTrack[];
   prepare: () => Promise<void>;
   frameAt: (time: number) => Frame;
 }
@@ -42,7 +45,7 @@ interface VideoTimeline {
 export async function exportScene(scene: Scene, kernel: MotionKernel, options: ExportOptions): Promise<ExportResult> {
   const snapshot = structuredClone(scene);
   return exportTimeline({
-    size: snapshot, durations: sceneSegments(snapshot).map(segment => segment.duration),
+    size: snapshot, durations: [sceneDuration(snapshot)], audio: audibleTracks(snapshot.audioTracks),
     prepare: () => prepareScene(snapshot), frameAt: time => evaluateScene(snapshot, time, kernel),
   }, options);
 }
@@ -59,7 +62,8 @@ export async function exportProject(project: Project, kernel: MotionKernel, opti
     if (![scene.width, scene.height].every(value => Number.isFinite(value) && value > 0)) throw new Error('Scene の幅と高さを正の数に設定してください。');
   }
   return exportTimeline({
-    size: first, durations: segments.flatMap(({ scene }) => sceneSegments(scene).map(segment => segment.duration)),
+    size: first, durations: segments.map(segment => segment.duration),
+    audio: segments.flatMap(({ scene, start }) => audibleTracks(scene.audioTracks).map(track => ({ ...track, start: track.start + start }))),
     prepare: async () => { for (const { scene } of segments) { checkAbort(settings.signal); await prepareScene(scene); } },
     frameAt: time => {
       const segment = projectSegmentAt(segments, time)!;
@@ -89,6 +93,8 @@ async function exportTimeline(timeline: VideoTimeline, options: ExportOptions): 
   let canvas: HTMLCanvasElement | undefined;
   let painter: FramePainter | undefined;
   let source: CanvasSource | undefined;
+  let audioSource: AudioBufferSource | undefined;
+  let mixer: AudioMixer | undefined;
   let output: Output<Mp4OutputFormat | WebMOutputFormat, BufferTarget> | undefined;
   let completed = false;
   let stage = '書き出しの準備';
@@ -98,6 +104,16 @@ async function exportTimeline(timeline: VideoTimeline, options: ExportOptions): 
     const codec = await findExportCodec(format, width, height, bitrate, signal);
     checkAbort(signal);
     if (!codec) throw new Error(`${format.toUpperCase()} を ${width} × ${height} で書き出せません。解像度を下げるか、別の形式をお試しください。`);
+    if (timeline.audio.length) {
+      stage = '音声の準備';
+      const audioCodec = format === 'mp4' ? 'aac' : 'opus';
+      if (!await abortable(canEncodeAudio(audioCodec, { numberOfChannels: 2, sampleRate: AUDIO_SAMPLE_RATE, bitrate: 128000 }), signal)) {
+        throw new Error(`${format.toUpperCase()} の音声をエンコードできません。別の形式か、音声エンコード対応のブラウザを使用してください。`);
+      }
+      mixer = new AudioMixer(timeline.audio, signal);
+      await mixer.prepare();
+      audioSource = new AudioBufferSource({ codec: audioCodec, bitrate: 128000 });
+    }
     stage = 'フォントと数式の準備';
     await abortable(timeline.prepare(), signal);
     checkAbort(signal);
@@ -118,13 +134,24 @@ async function exportTimeline(timeline: VideoTimeline, options: ExportOptions): 
     // WebM needs DefaultDuration to describe its final SimpleBlock. Without it,
     // players/demuxers report an end time one frame too early. MP4 stores per-frame durations.
     output.addVideoTrack(source, format === 'webm' ? { frameRate: fps } : {});
+    if (audioSource) output.addAudioTrack(audioSource);
     stage = 'エンコーダーの開始';
     await output.start();
     checkAbort(signal);
     stage = '動画フレームの描画とエンコード';
+    let audioFrames = 0;
+    const totalAudioFrames = Math.round(durationMs / 1000 * AUDIO_SAMPLE_RATE);
     for (let index = 0; index < frameCount; index++) {
       checkAbort(signal);
       const timestamp = index / fps;
+      if (mixer && audioSource) while (audioFrames < Math.min(totalAudioFrames, Math.ceil((timestamp + 1 / fps) * AUDIO_SAMPLE_RATE))) {
+        stage = '音声の混合とエンコード';
+        const frames = Math.min(AUDIO_SAMPLE_RATE / 4, totalAudioFrames - audioFrames);
+        const buffer = await mixer.mix(audioFrames / AUDIO_SAMPLE_RATE, frames);
+        checkAbort(signal); await audioSource.add(buffer); checkAbort(signal);
+        audioFrames += frames;
+      }
+      stage = '動画フレームの描画とエンコード';
       const frame = timeline.frameAt(timestamp * 1000);
       await painter.render(frame, { signal });
       checkAbort(signal);
@@ -157,6 +184,8 @@ async function exportTimeline(timeline: VideoTimeline, options: ExportOptions): 
       // Observe cleanup failures without replacing the original failure or AbortError.
       await output.cancel().catch(() => {});
     }
+    mixer?.dispose();
+    try { audioSource?.close(); } catch { /* Preserve the original result/error. */ }
     // Covers a source created before addVideoTrack/start fails as well.
     try { source?.close(); } catch { /* Preserve the original result/error. */ }
     try { painter?.dispose(); } catch { /* Still release the canvas and preserve the original result/error. */ }

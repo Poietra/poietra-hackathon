@@ -163,10 +163,10 @@ test('failed image uploads and unsupported files leave the composition unchanged
   try {
     await page.route('**/api/rooms/*/images', route => route.fulfill({ status: 503, json: { error: '画像を保存できませんでした。' } }));
     await page.getByLabel('画像ファイル', { exact: true }).setInputFiles(await fixture(page));
-    await expect(page.getByRole('status')).toContainText('画像を保存できませんでした');
+    await expect(page.getByRole('alert').filter({ hasText: '画像を保存できませんでした' })).toBeVisible();
     expect(Object.values(watch.project().scenes['scene-1'].objects).some(object => object.kind === 'image')).toBe(false);
     await page.getByLabel('画像ファイル', { exact: true }).setInputFiles({ name: 'unsafe.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg onload="alert(1)"/>') });
-    await expect(page.getByRole('status')).toContainText('PNG・JPEG・WebP');
+    await expect(page.getByRole('alert').filter({ hasText: 'PNG・JPEG・WebP' })).toBeVisible();
     expect(Object.values(watch.project().scenes['scene-1'].objects).some(object => object.kind === 'image')).toBe(false);
   } finally { watch.close(); }
 });
@@ -247,7 +247,7 @@ test('pasting an image into another project saves its own asset and fails withou
   }, clipboard);
   try {
     await target.route('**/api/rooms/*/images', route => route.fulfill({ status: 503, json: { error: '画像を保存できませんでした。' } }));
-    await paste(); await expect(target.getByRole('status')).toContainText('画像を保存できませんでした');
+    await paste(); await expect(target.getByRole('status').filter({ hasText: '画像を保存できませんでした' })).toBeVisible();
     await expect(target.getByRole('button', { name: 'Together', exact: true })).toHaveCount(0);
     await target.unroute('**/api/rooms/*/images'); await paste();
     await expect(target.locator('.scene-svg image')).toHaveAttribute('href', /^data:image\/png;base64,/);

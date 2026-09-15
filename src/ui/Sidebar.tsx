@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Menu } from '@base-ui/react/menu';
-import { ChevronDown, ChevronRight, Circle, Eye, EyeOff, Layers2, LockKeyhole, UnlockKeyhole, Plus, Search, Square, Spline, Sigma, Type, ArrowUpRight, Minus, Group, MoreHorizontal, Copy, Trash2, Image } from 'lucide-react';
+import { ChevronDown, ChevronRight, Circle, Eye, EyeOff, Layers2, LockKeyhole, UnlockKeyhole, Plus, Search, Square, Spline, Sigma, Type, ArrowUpRight, Minus, Group, MoreHorizontal, Copy, Trash2, Image, Film } from 'lucide-react';
 import { useEditor } from '../editor/context';
 import { deleteComposition, duplicateComposition } from '../editor/structure';
 import { orderedObjects, type ObjectKind, type SceneObject } from '../../shared/model';
@@ -10,7 +10,7 @@ import { groupMembers } from '../editor/groups';
 import './groups.css';
 
 export function ObjectIcon({ kind, size = 15 }: { kind: ObjectKind; size?: number }) {
-  const Component = { circle: Circle, rectangle: Square, text: Type, equation: Sigma, path: Spline, arrow: ArrowUpRight, numberline: Minus, image: Image }[kind];
+  const Component = { circle: Circle, rectangle: Square, text: Type, equation: Sigma, path: Spline, arrow: ArrowUpRight, numberline: Minus, image: Image, video: Film }[kind];
   return <Component size={size} strokeWidth={1.6} />;
 }
 

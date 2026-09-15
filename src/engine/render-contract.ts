@@ -47,6 +47,8 @@ export interface ExportCapabilities {
  */
 export interface RendererContract {
   prepareScene(scene: Scene): Promise<void>;
+  /** Decode video snapshots for this exact frame before synchronous SVG rendering. */
+  prepareFrame?(frame: Frame, signal?: AbortSignal): Promise<void>;
   frameToSvg(frame: Frame, options?: SvgOptions): string;
   objectBounds(item: RenderObject): ObjectBounds;
 }

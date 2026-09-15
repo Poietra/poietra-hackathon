@@ -6,6 +6,7 @@ import { AiRequestSchema, aiErrorMessage, createEditProposal, imageQuality, resp
 import { getRoom, ROOM_PATTERN, rooms } from './collaboration';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { handleImages, saveRoomImage } from './images';
+import { handleMedia } from './media';
 
 const port = Number(process.env.PORT || 5173);
 const production = process.env.NODE_ENV === 'production';
@@ -40,6 +41,7 @@ server.on('request', async (request, response) => {
   const url = new URL(request.url || '/', 'http://localhost');
   if (url.pathname === '/api/health') { json(response, 200, { ok: true, ai: !!apiKey }); return; }
   if (await handleImages(request, response, url.pathname)) return;
+  if (await handleMedia(request, response, url.pathname)) return;
   if (url.pathname === '/api/ai/propose' && request.method === 'POST') {
     if (!apiKey) { json(response, 503, { error: 'AI はまだ接続されていません。接続が完了すると使えるようになります。' }); return; }
     let room: ReturnType<typeof getRoom> | undefined;

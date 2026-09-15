@@ -1,0 +1,21 @@
+.timeline .segment-card:focus-visible, .timeline .add-composition:focus-visible, .timeline .track-label:focus-visible, .timeline .animation-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.timeline .segment-card.selected .segment-duration { color: #c0b9de; }
+.timeline .transition-caption { gap: 16px; min-height: 26px; height: auto; }
+.timeline .transition-caption > span { flex-shrink: 0; }
+.timeline-feedback { flex: 1; }
+.timeline-feedback .operation-feedback-label { max-width: 45%; }
+.timeline-feedback .operation-feedback-detail { overflow: hidden; text-overflow: ellipsis; }
+.track-row:hover:not(.selected), .track-row:focus-within:not(.selected) { background: #22212b; }
+.track-row .animation-bar:hover:not([aria-disabled='true']), .track-row .animation-bar:focus-visible { border-color: #a9a0da; background: #383e6c; }
+.track-row[data-track-active] { background: #302c3b; }
+.track-row[data-track-active] .animation-bar { border-color: #bab2ee; background: #43497e; cursor: grabbing; }
+.track-row .bar-handle:hover::after { width: 3px; left: 2px; background: #e4defa; }
+.track-unavailable .animation-bar { background: #2b2c37; border-color: #4b485b; border-style: dashed; color: #aaa6b9; }
+.track-unavailable .bar-handle { cursor: not-allowed; }
+.track-unavailable .bar-handle::after { display: none; }
+.bar-timing { color: #b3aecb; font-variant-numeric: tabular-nums; }
+@media(max-width:1250px) {
+  .timeline .transition-caption { flex-wrap: wrap; gap: 5px 13px; padding-bottom: 5px; }
+  .timeline-feedback { order: 2; flex-basis: 100%; }
+  .timeline-feedback .operation-feedback-label { max-width: 48%; }
+}

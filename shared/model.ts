@@ -1,5 +1,6 @@
 import type { ImageAsset } from './images';
-export type ObjectKind = 'circle' | 'rectangle' | 'text' | 'equation' | 'path' | 'arrow' | 'numberline' | 'image';
+import type { AudioTrack, MediaAsset, MediaPlayback } from './media';
+export type ObjectKind = 'circle' | 'rectangle' | 'text' | 'equation' | 'path' | 'arrow' | 'numberline' | 'image' | 'video';
 export type Easing = 'linear' | 'easeInOut' | 'easeIn' | 'easeOut';
 export type AnimationKind = 'move' | 'write' | 'fade' | 'grow' | 'none';
 export type Point = { x: number; y: number };
@@ -13,6 +14,8 @@ export interface SceneObject {
   groupId: string | null;
   locked: boolean;
   image?: ImageAsset;
+  media?: MediaAsset;
+  playback?: MediaPlayback;
 }
 
 export interface ObjectState {
@@ -72,6 +75,7 @@ export interface Scene {
   compositionOrder: string[];
   compositions: Record<string, Composition>;
   transitions: Record<string, Transition>;
+  audioTracks?: Record<string, AudioTrack>;
   /** Internal CRDT tombstone; readProject omits it from the editable/saved view. */
   deleted?: boolean;
 }
@@ -87,7 +91,7 @@ export type Selection = { kind: 'composition' | 'transition'; id: string };
 export type Segment = { kind: Selection['kind']; id: string; start: number; duration: number };
 
 export const COLORS = ['#d7d8e4', '#67c4d9', '#f4ce55', '#b5d396', '#ef8078', '#d5a3bd', '#8a8fe9', '#ffffff'];
-export const KINDS: Record<ObjectKind, string> = { circle: 'Circle', rectangle: 'Rectangle', text: 'Text', equation: 'Equation', path: 'Path', arrow: 'Arrow', numberline: 'Number line', image: 'Image' };
+export const KINDS: Record<ObjectKind, string> = { circle: 'Circle', rectangle: 'Rectangle', text: 'Text', equation: 'Equation', path: 'Path', arrow: 'Arrow', numberline: 'Number line', image: 'Image', video: 'Video' };
 export const EASINGS: Record<Easing, string> = { linear: 'Linear', easeInOut: 'Ease in out', easeIn: 'Ease in', easeOut: 'Ease out' };
 export const ANIMATIONS: Record<AnimationKind, string> = { move: 'Move', write: 'Write', fade: 'Fade', grow: 'Grow', none: 'Cut' };
 
@@ -127,7 +131,12 @@ export function sceneSegments(scene: Scene): Segment[] {
   return segments;
 }
 
-export function sceneDuration(scene: Scene) { return sceneSegments(scene).reduce((total, segment) => total + segment.duration, 0); }
+export function sceneDuration(scene: Scene) {
+  let duration = sceneSegments(scene).reduce((total, segment) => total + segment.duration, 0);
+  for (const track of Object.values(scene.audioTracks ?? {})) duration = Math.max(duration, track.start + track.duration);
+  for (const object of Object.values(scene.objects)) if (object.kind === 'video' && object.playback && Object.values(scene.compositions).some(composition => composition.states[object.id]?.visible)) duration = Math.max(duration, object.playback.start + object.playback.duration);
+  return duration;
+}
 export function orderedObjects(scene: Scene) { return Object.values(scene.objects).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)); }
 export function stateFor(scene: Scene, compositionId: string, objectId: string): ObjectState | undefined { return scene.compositions[compositionId]?.states[objectId]; }
 export function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, Number.isFinite(value) ? value : min)); }

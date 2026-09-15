@@ -1,2 +1,12 @@
 .stage-surface:focus { outline: none; }
 .stage-surface:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.stage-feedback { position: absolute; bottom: 9px; left: 9px; max-width: calc(100% - 18px); z-index: 20; }
+.stage-feedback .operation-feedback-content { background: #202029; border: 1px solid #454252; border-radius: 5px; padding: 6px 8px; box-shadow: 0 1px 2px #0003; }
+.stage-feedback .operation-feedback-label { flex-shrink: 0; max-width: 42%; }
+.stage-feedback .operation-feedback-detail { overflow: hidden; text-overflow: ellipsis; }
+.stage-surface[data-gesture='move'], .stage-surface[data-gesture='rotate'] { cursor: grabbing !important; }
+.stage-surface[data-gesture='marquee'] { cursor: crosshair !important; }
+.stage-surface [data-transform-handle]:hover > :last-child { fill: #a9a7fb; }
+.stage-surface [data-path-handle]:hover { stroke: #f0edf8; }
+.stage-surface.is-manipulating [data-selection-id]:not([data-locked]) > rect { stroke: #b8b5ff; }
+.stage-media-status { position: absolute; inset: 0; display: grid; place-items: center; background: #191920b3; color: #c9c7d5; font-size: 12px; pointer-events: none; }

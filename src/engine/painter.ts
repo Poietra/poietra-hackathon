@@ -4,6 +4,7 @@ import { createGlowRenderer, type GlowRenderer } from './effects/glow';
 import { LayerCache, type RasterLayer } from './rendering/layers';
 import { color, finite, unit } from './rendering/svg';
 import { frameToSvg } from './renderer';
+import { VideoFrames } from './rendering/videos';
 import { drawSvgFrame } from './exporting/rasterize';
 
 const DEGREES_PER_HALF_TURN = 180;
@@ -76,6 +77,7 @@ export async function createFramePainter(canvas: HTMLCanvasElement): Promise<Fra
   const staging = document.createElement('canvas');
   const context = opaqueContext(staging);
   const layers = new LayerCache();
+  const videos = new VideoFrames();
   const lifetime = new AbortController();
   let glow = createGlowRenderer();
 
@@ -95,6 +97,7 @@ export async function createFramePainter(canvas: HTMLCanvasElement): Promise<Fra
     if (staging.width !== canvas.width) staging.width = canvas.width;
     if (staging.height !== canvas.height) staging.height = canvas.height;
     try {
+      await videos.prepare(frame, signal);
       if (glow?.lost) useSvgFallback();
       if (glow && !await paintLayers(context, frame, layers, glow, signal)) useSvgFallback();
       if (!glow) {
@@ -112,6 +115,7 @@ export async function createFramePainter(canvas: HTMLCanvasElement): Promise<Fra
     if (lifetime.signal.aborted) return;
     lifetime.abort(abortError());
     useSvgFallback();
+    videos.dispose();
     staging.width = 0;
     staging.height = 0;
   }
