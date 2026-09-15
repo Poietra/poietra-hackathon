@@ -52,9 +52,9 @@ async function fixture(page: Page, operations: Operation[]) {
   };
 }
 async function request(page: Page, prompt = '新しい黄色い円を作って上に弧を描いて動かし、数式も登場させて。Transition は1200msにして') {
-  await page.getByRole('button', { name: 'Assistant', exact: true }).click();
-  await page.getByRole('textbox', { name: 'AI への編集依頼', exact: true }).fill(prompt);
-  await page.getByRole('button', { name: '編集を依頼', exact: true }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.getByRole('textbox', { name: 'チャットメッセージ', exact: true }).fill(`@codex ${prompt}`);
+  await page.getByRole('button', { name: '送信', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Apply edits', exact: true })).toBeVisible();
 }
 async function preview(page: Page, position = '600') {

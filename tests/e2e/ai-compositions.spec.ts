@@ -55,9 +55,9 @@ async function open(page: Page, existing = false) {
   };
 }
 async function request(page: Page) {
-  await page.getByRole('button', { name: 'Assistant', exact: true }).click();
-  await page.getByRole('textbox', { name: 'AI への編集依頼', exact: true }).fill('円と次の場面を作って、ベジェ移動と数式の Write を設定して');
-  await page.getByRole('button', { name: '編集を依頼', exact: true }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.getByRole('textbox', { name: 'チャットメッセージ', exact: true }).fill('@codex 円と次の場面を作って、ベジェ移動と数式の Write を設定して');
+  await page.getByRole('button', { name: '送信', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Apply edits', exact: true })).toBeVisible();
 }
 
@@ -65,7 +65,7 @@ test('a blank Scene becomes an editable animation in one Apply, shows new target
   const room = await open(page), peerContext = await browser.newContext(), peer = await peerContext.newPage();
   try {
     await peer.goto(page.url()); await expect(peer.getByText('Live', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Assistant', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
     await expect(page.getByRole('button', { name: '円を作り、次の場面へ上向きの弧で動かして', exact: true })).toBeVisible();
     await request(page);
     const targets = page.getByLabel('編集する対象', { exact: true });
@@ -129,7 +129,7 @@ test('a copied source changed by a peer invalidates the whole proposal without c
     await page.getByRole('button', { name: 'Original circle', exact: true }).click();
     await page.getByRole('button', { name: 'Design', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('333');
-    await page.getByRole('button', { name: 'Assistant', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
     await page.getByRole('button', { name: 'Apply edits', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('変更されました');
     expect(room.scene().compositionOrder).toEqual([firstId]);

@@ -5,6 +5,7 @@ import { applyChanges, changesFor, getShared, LOCAL_ORIGIN, readProject, toShare
 import { makeBlankScene } from '../../shared/demo';
 import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { applyProposal, type EditProposal } from '../../shared/ai';
+import { RoomChat } from '../../shared/chat';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
 import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
 
@@ -42,6 +43,8 @@ export function currentRoom() {
 
 export class EditorStore {
   readonly doc = new Y.Doc();
+  readonly chat = new RoomChat(this.doc);
+  readonly chatAuthorId = sessionStorage.getItem('poietra-chat-author') || crypto.randomUUID();
   readonly provider: WebsocketProvider;
   readonly persistence: IndexeddbPersistence;
   readonly undoManager: EditorUndoManager;
@@ -54,6 +57,7 @@ export class EditorStore {
   userName = localStorage.getItem('poietra-user-name') || `Guest ${String(this.doc.clientID).slice(-3)}`;
 
   constructor(readonly roomId: string) {
+    sessionStorage.setItem('poietra-chat-author', this.chatAuthorId);
     this.undoManager = new EditorUndoManager(this.doc);
     this.persistence = new IndexeddbPersistence(`poietra-${roomId}`, this.doc);
     const url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/sync`;
@@ -68,7 +72,7 @@ export class EditorStore {
     this.provider.on('connection-close', () => this.refresh({ status: 'disconnected', synced: false, connectionIssue: 'サーバーとの接続が切れました。自動で再接続を試みています。' }));
     this.provider.on('connection-error', () => this.refresh({ connectionIssue: 'サーバーに接続できません。ネットワークを確認して再接続してください。' }));
     this.provider.on('closed', () => this.refresh({ status: 'disconnected', synced: false, connectionIssue: 'サーバーが接続を終了しました。再接続してください。続く場合は共有リンクを確認してください。' }));
-    this.doc.on('update', () => { this.refresh({ project: readProject(this.doc) }); this.watchConnection(); });
+    this.doc.getMap('project').observeDeep(() => { this.refresh({ project: readProject(this.doc) }); this.watchConnection(); });
     this.provider.awareness.on('change', () => this.refresh());
     for (const event of ['stack-item-added', 'stack-item-popped', 'stack-cleared', 'stack-item-updated'] as const) this.undoManager.on(event, () => this.refresh());
     this.localWait = setTimeout(() => this.refresh({ localPersistence: 'unavailable' }), 8000);

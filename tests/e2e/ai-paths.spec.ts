@@ -34,9 +34,9 @@ async function stub(page: Page, doc: Y.Doc, operations: (prompt: string) => Oper
   });
 }
 async function send(page: Page, text = '円を上に弧を描いて動かしてください') {
-  await page.getByRole('button', { name: 'Assistant', exact: true }).click();
-  await page.getByRole('textbox', { name: 'AI への編集依頼', exact: true }).fill(text);
-  await page.getByRole('button', { name: '編集を依頼', exact: true }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.getByRole('textbox', { name: 'チャットメッセージ', exact: true }).fill(`@codex ${text}`);
+  await page.getByRole('button', { name: '送信', exact: true }).click();
 }
 async function chooseMotion(page: Page) {
   await page.getByRole('button', { name: 'Circle', exact: true }).click();
@@ -81,7 +81,7 @@ test('a path proposal is rejected when a collaborator changes an endpoint while 
     await page.getByRole('button', { name: 'Design', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('320');
     await page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
-    await page.getByRole('button', { name: 'Assistant', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
     await page.getByRole('button', { name: 'Apply edits', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('提案後に対象が変更');
     expect(readProject(room.doc)!.scenes['scene-1'].transitions['transition-1'].tracks.circle.path).toEqual(original);
