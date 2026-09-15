@@ -44,7 +44,7 @@ POIETRA_TEST_URL=http://127.0.0.1:8787 pnpm test:e2e
 
 ```bash
 pnpm exec wrangler login
-pnpm deploy
+pnpm run deploy
 # AI のキーをサーバー側の Secret に設定（対話入力）
 pnpm exec wrangler secret put OPENAI_API_KEY
 ```
