@@ -17,7 +17,7 @@ import { ProjectDialog } from './ui/ProjectDialog';
 import { PlaybackPanel } from './ui/PlaybackPanel';
 import { ExportDialog } from './ui/ExportDialog';
 import { ProjectPreview } from './ui/ProjectPreview';
-import { IMAGE_ACCEPT, normalizeImage, uploadImage, portableProject } from './editor/images';
+import { IMAGE_ACCEPT, normalizeImage, uploadImage, portableProject, rehostImageAssets } from './editor/images';
 import { LOCAL_ORIGIN } from '../shared/document';
 import { PROJECT_FILE_LIMIT } from '../shared/project-file';
 import { SceneTabs } from './ui/SceneTabs';
@@ -276,7 +276,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
         notify(`${data.objects.length} 個のオブジェクトを${event.type === 'cut' ? '切り取りました' : 'コピーしました'}`);
       } catch (error) { event.preventDefault(); notify(error instanceof Error ? error.message : 'コピーできませんでした'); }
     }
-    function paste(event: ClipboardEvent) {
+    async function paste(event: ClipboardEvent) {
       if (!scene || composing.current || textTarget(event.target) || window.getSelection()?.toString() || !event.clipboardData) return;
       const imageFiles = [...event.clipboardData.files].filter(file => file.type.startsWith('image/'));
       if (imageFiles.length) { event.preventDefault(); void importImages(imageFiles); return; }
@@ -287,6 +287,16 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
         if (!data) return;
         event.preventDefault();
         if (transportView) { notify('編集する場面を開いてから貼り付けてください。'); return; }
+        if (data.objects.some(object => object.image)) {
+          if (imageRequest.current) { notify('画像の保存が終わってから貼り付けてください。'); return; }
+          const request = { sceneId: scene.id, compositionId, controller: new AbortController() };
+          imageRequest.current = request; setImportingImage(true);
+          try {
+            await rehostImageAssets(data.objects, store.roomId, request.controller.signal);
+            request.controller.signal.throwIfAborted();
+          } catch (error) { if (request.controller.signal.aborted) return; throw error; }
+          finally { if (imageRequest.current === request) { imageRequest.current = null; setImportingImage(false); } }
+        }
         const target = `${scene.id}/${compositionId}`;
         const count = lastPaste.current.text === text && lastPaste.current.target === target ? lastPaste.current.count + 1 : 1;
         const ids = store.paste(scene.id, compositionId, data, inPlace ? 0 : count * 24);

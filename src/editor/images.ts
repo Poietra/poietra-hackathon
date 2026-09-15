@@ -1,6 +1,6 @@
 import { IMAGE_ASSET_PATH, IMAGE_BYTES_LIMIT, IMAGE_DATA_URL, IMAGE_EDGE_LIMIT, ImageAssetSchema, type ImageAsset } from '../../shared/images';
 import { blobDataUrl, imageBlob } from '../engine/rendering/image-source';
-import type { Project } from '../../shared/model';
+import type { Project, SceneObject } from '../../shared/model';
 
 export const IMAGE_FILE_LIMIT = 20 * 1024 * 1024;
 export const IMAGE_ACCEPT = 'image/png,image/jpeg,image/webp';
@@ -50,10 +50,18 @@ export async function portableProject(project: Project, signal?: AbortSignal): P
 }
 
 export async function storeProjectImages(project: Project, room: string, signal?: AbortSignal): Promise<Project> {
-  const snapshot = structuredClone(project), sources = new Map<string, ImageAsset>();
-  for (const scene of Object.values(snapshot.scenes)) for (const object of Object.values(scene.objects)) if (object.image) {
+  const snapshot = structuredClone(project);
+  await rehostImageAssets(Object.values(snapshot.scenes).flatMap(scene => Object.values(scene.objects)), room, signal);
+  return snapshot;
+}
+
+/** Rehost copied objects before publishing them into another shared room. */
+export async function rehostImageAssets(objects: SceneObject[], room: string, signal?: AbortSignal): Promise<void> {
+  const sources = new Map<string, ImageAsset>();
+  for (const object of objects) if (object.image) {
     ImageAssetSchema.parse(object.image);
     const src = object.image.src;
+    if (IMAGE_ASSET_PATH.exec(src)?.[1] === room) continue;
     if (!sources.has(src)) {
       const blob = await imageBlob(src, signal);
       // Verify the pixels without re-encoding an already normalized image on every import.
@@ -69,5 +77,4 @@ export async function storeProjectImages(project: Project, room: string, signal?
     if (stored.width !== object.image.width || stored.height !== object.image.height) throw new Error('画像のサイズ情報が一致しません。元の画像を追加し直してください。');
     object.image = { ...stored };
   }
-  return snapshot;
 }

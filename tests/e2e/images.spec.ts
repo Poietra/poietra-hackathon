@@ -181,7 +181,7 @@ test('JPEG and WebP can be added together and undone as one edit', async ({ page
     });
     await page.getByLabel('画像ファイル', { exact: true }).setInputFiles(files.map(file => ({ name: file.name, mimeType: file.mimeType, buffer: Buffer.from(file.encoded, 'base64') })));
     await expect(page.getByRole('button', { name: 'Photo', exact: true })).toBeVisible(); await expect(page.getByRole('button', { name: 'Logo', exact: true })).toBeVisible();
-    expect(Object.values(watch.project().scenes['scene-1'].objects).filter(object => object.kind === 'image')).toHaveLength(2);
+    await expect.poll(() => Object.values(watch.project().scenes['scene-1'].objects).filter(object => object.kind === 'image').length).toBe(2);
     await page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Photo', exact: true })).toHaveCount(0); await expect(page.getByRole('button', { name: 'Logo', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'やり直す (⌘⇧Z)', exact: true }).click();
@@ -231,4 +231,30 @@ test('large images are normalized and portable imports preserve compressed pixel
       await expect(page.locator('.scene-svg image')).toHaveAttribute('href', /^data:image\/webp;base64,/);
     } finally { next.close(); }
   } finally { watch.close(); }
+});
+
+test('pasting an image into another project saves its own asset and fails without partial edits', async ({ page, browser }) => {
+  const sourceRoom = await open(page); await upload(page);
+  const clipboard = await page.locator('[data-testid="stage-main"]').evaluate(element => {
+    const clipboardData = new DataTransfer(); element.dispatchEvent(new ClipboardEvent('copy', { bubbles: true, cancelable: true, clipboardData }));
+    return clipboardData.getData('text/plain');
+  });
+  expect(clipboard).toContain(sourceRoom);
+  const context = await browser.newContext(), target = await context.newPage(), room = await open(target), watch = await observer(target, room);
+  const paste = () => target.locator('[data-testid="stage-main"]').evaluate((element, text) => {
+    const clipboardData = new DataTransfer(); clipboardData.setData('text/plain', text);
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }));
+  }, clipboard);
+  try {
+    await target.route('**/api/rooms/*/images', route => route.fulfill({ status: 503, json: { error: '画像を保存できませんでした。' } }));
+    await paste(); await expect(target.getByRole('status')).toContainText('画像を保存できませんでした');
+    await expect(target.getByRole('button', { name: 'Together', exact: true })).toHaveCount(0);
+    await target.unroute('**/api/rooms/*/images'); await paste();
+    await expect(target.locator('.scene-svg image')).toHaveAttribute('href', /^data:image\/png;base64,/);
+    await expect.poll(() => Object.values(watch.project().scenes['scene-1'].objects).filter(object => object.kind === 'image').length).toBe(1);
+    const copied = Object.values(watch.project().scenes['scene-1'].objects).find(object => object.kind === 'image')!;
+    expect(copied.image!.src).toContain(`/api/rooms/${room}/images/`); expect(JSON.stringify(copied)).not.toContain(sourceRoom);
+    await target.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click(); await expect(target.locator('.scene-svg image')).toHaveCount(0);
+    await expect(page.locator('.scene-svg image')).toHaveCount(1);
+  } finally { watch.close(); await context.close(); }
 });
