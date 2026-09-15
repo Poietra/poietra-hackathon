@@ -29,6 +29,21 @@ export function pointInRotatedBounds(point: Point, bounds: Rectangle, state: Pic
   return local.x >= left && local.x <= left + bounds.width && local.y >= top && local.y <= top + bounds.height;
 }
 
+export function rectangleFromPoints(a: Point, b: Point): Rectangle {
+  return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(b.x - a.x), height: Math.abs(b.y - a.y) };
+}
+
+/** A marquee encloses the entire visual box, including all rotated corners. */
+export function rectangleContainsRotatedBounds(rectangle: Rectangle, bounds: Rectangle, state: Pick<ObjectState, 'x' | 'y' | 'rotation'>): boolean {
+  return [
+    { x: bounds.x, y: bounds.y }, { x: bounds.x + bounds.width, y: bounds.y },
+    { x: bounds.x, y: bounds.y + bounds.height }, { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+  ].every(corner => {
+    const point = localToWorld({ x: corner.x - state.x, y: corner.y - state.y }, state);
+    return point.x >= rectangle.x && point.x <= rectangle.x + rectangle.width && point.y >= rectangle.y && point.y <= rectangle.y + rectangle.height;
+  });
+}
+
 /** Resize around the opposite corner, including when the object is rotated. */
 export function resizeFromCorner(state: ObjectState, size: { width: number; height: number }, corner: ResizeCorner, delta: Point, preserveAspect: boolean, text: boolean): Partial<ObjectState> {
   const local = rotateVector(delta, -state.rotation), sign = CORNER_SIGNS[corner];

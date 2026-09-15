@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react';
-import { AlignHorizontalJustifyStart, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, Link2, Unlink, Eye, EyeOff, Plus, RotateCcw, Spline, X, Copy, LockKeyhole, UnlockKeyhole, ArrowUpToLine, ArrowDownToLine } from 'lucide-react';
+import { AlignHorizontalJustifyStart, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, Eye, EyeOff, Plus, RotateCcw, Spline, X, Copy, LockKeyhole, UnlockKeyhole, ArrowUpToLine, ArrowDownToLine } from 'lucide-react';
 import { useEditor } from '../editor/context';
 import { ANIMATIONS, EASINGS, KINDS, COLORS, defaultTrack, orderedObjects, type AnimationKind, type Easing, type ObjectState } from '../../shared/model';
 import { Field, IconButton, NumberInput, Section } from './components';
 import { compositionFrame } from '../engine/evaluate';
 import { changesFor } from '../../shared/document';
+import { GroupAnimationInspector, GroupControls } from './GroupInspector';
 
 function ColorInput({ value, onChange, label }: { value: string; onChange: (color: string) => void; label: string }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -49,6 +50,7 @@ export function Inspector() {
   }
 
   if (transition) {
+    if (selectedIds.length > 1) return <div className="inspector-content"><div className="inspector-title"><span>{selectedIds.length} objects</span><span className="inspector-kind">Transition · {transition.duration} ms</span></div><GroupControls/><GroupAnimationInspector/></div>;
     const from = object ? scene.compositions[transition.fromId]?.states[object.id] : null;
     const to = object ? scene.compositions[transition.toId]?.states[object.id] : null;
     const entering = !from?.visible && !!to?.visible;
@@ -57,7 +59,7 @@ export function Inspector() {
     function setTrack(patch: Parameters<typeof store.setTrack>[3]) { if (object && canEditSelection()) store.setTrack(scene.id, transition!.id, object.id, patch); }
     const minimumDuration = Math.max(100, ...Object.values(transition.tracks).filter(item => scene.objects[item.objectId]?.locked).map(item => item.start + item.duration));
     const curves: Record<Easing, string> = { linear: 'M12 43 L184 9', easeInOut: 'M12 43 C76 43 80 9 146 9 L184 9', easeIn: 'M12 43 C130 43 164 32 184 9', easeOut: 'M12 43 C35 12 61 9 184 9' };
-    return <div className="inspector-content"><div className="inspector-title"><div className="inspector-title-label"><span>{object?.name || 'Transition'}</span>{lockControl}</div><span className="inspector-kind">{object ? KINDS[object.kind] : 'Between compositions'}</span></div>{lockNote}<fieldset className="inspector-fields" disabled={lockedSelection}>
+    return <div className="inspector-content"><div className="inspector-title"><div className="inspector-title-label"><span>{object?.name || 'Transition'}</span>{lockControl}</div><span className="inspector-kind">{object ? KINDS[object.kind] : 'Between compositions'}</span></div><GroupControls/>{lockNote}<fieldset className="inspector-fields" disabled={lockedSelection}>
       <Section title="Transition"><Field label="Duration"><NumberInput value={transition.duration} onChange={value => { if (canEditSelection()) store.setTransitionDuration(scene.id, transition.id, value); }} label="Transition duration" suffix="ms" min={minimumDuration} max={120000}/></Field></Section>
       {object && timing ? <>
         <Section title={entering ? 'Enter' : leaving ? 'Exit' : 'Animation'}>
@@ -77,10 +79,10 @@ export function Inspector() {
     </fieldset></div>;
   }
 
-  return <div className="inspector-content"><div className="inspector-title"><div className="inspector-title-label"><span>{selectedIds.length > 1 ? `${selectedIds.length} objects` : object ? KINDS[object.kind] : 'Composition'}</span>{lockControl}</div>{object && <input className="object-name" aria-label="Object name" disabled={object.locked} value={object.name} onChange={e => { if (canEditSelection()) store.setObject(scene.id, object.id, { name: e.target.value }); }}/>}</div>{lockNote}<fieldset className="inspector-fields" disabled={lockedSelection}>
+  return <div className="inspector-content"><div className="inspector-title"><div className="inspector-title-label"><span>{selectedIds.length > 1 ? `${selectedIds.length} objects` : object ? KINDS[object.kind] : 'Composition'}</span>{lockControl}</div>{object && <input className="object-name" aria-label="Object name" disabled={object.locked} value={object.name} onChange={e => { if (canEditSelection()) store.setObject(scene.id, object.id, { name: e.target.value }); }}/>}</div><GroupControls/>{lockNote}<fieldset className="inspector-fields" disabled={lockedSelection}>
     {selectedIds.length > 0 ? <>
       {state && <Section title="Position"><div className="property-grid"><Field label="X"><NumberInput value={state.x} label="Position X" onChange={x => update({ x })}/></Field><Field label="Y"><NumberInput value={state.y} label="Position Y" onChange={y => update({ y })}/></Field></div><div className="property-grid"><Field label="↳"><NumberInput value={state.rotation} label="Rotation" onChange={rotation => update({ rotation })} suffix="°" min={-360} max={360}/></Field><div className="button-group"><IconButton label="90度回転" onClick={() => update({ rotation: (state.rotation + 90) % 360 })}><RotateCcw size={14}/></IconButton></div></div></Section>}
-      <Section title={selectedIds.length > 1 ? 'Alignment' : 'Align'}><div className="alignment-buttons">{([[AlignHorizontalJustifyStart,'x','start','左揃え'],[AlignHorizontalJustifyCenter,'x','center','左右中央'],[AlignHorizontalJustifyEnd,'x','end','右揃え'],[AlignVerticalJustifyStart,'y','start','上揃え'],[AlignVerticalJustifyCenter,'y','center','上下中央'],[AlignVerticalJustifyEnd,'y','end','下揃え']] as const).map(([Icon,axis,position,label]) => <IconButton key={label} label={label} onClick={() => align(axis,position)}><Icon size={14}/></IconButton>)}</div>{selectedIds.length > 1 && <button className="subtle-button full-width" onClick={() => { if (!canEditSelection()) return; store.link(scene.id, selectedIds); editor.notify('オブジェクトを連結しました'); }}><Link2 size={14}/>Link objects</button>}{selectedIds.some(id => scene.objects[id]?.groupId) && <button className="text-button" onClick={() => { if (canEditSelection()) store.unlink(scene.id, selectedIds); }}><Unlink size={13}/>Unlink objects</button>}</Section>
+      <Section title={selectedIds.length > 1 ? 'Alignment' : 'Align'}><div className="alignment-buttons">{([[AlignHorizontalJustifyStart,'x','start','左揃え'],[AlignHorizontalJustifyCenter,'x','center','左右中央'],[AlignHorizontalJustifyEnd,'x','end','右揃え'],[AlignVerticalJustifyStart,'y','start','上揃え'],[AlignVerticalJustifyCenter,'y','center','上下中央'],[AlignVerticalJustifyEnd,'y','end','下揃え']] as const).map(([Icon,axis,position,label]) => <IconButton key={label} label={label} onClick={() => align(axis,position)}><Icon size={14}/></IconButton>)}</div></Section>
       <Section title="Layer order"><button className="subtle-button full-width" disabled={atFront} onClick={() => arrange(true)}><ArrowUpToLine size={14}/>Bring to front</button><button className="subtle-button full-width" disabled={atBack} onClick={() => arrange(false)}><ArrowDownToLine size={14}/>Send to back</button></Section>
       {state && <>{object?.kind !== 'text' && object?.kind !== 'equation' && <Section title="Size"><div className="property-grid"><Field label="W"><NumberInput value={state.width} label="Width" onChange={width => update({ width })} min={1}/></Field><Field label="H"><NumberInput value={state.height} label="Height" onChange={height => update({ height })}/></Field></div></Section>}
       {(object?.kind === 'text' || object?.kind === 'equation') && <Section title={object.kind === 'equation' ? 'LaTeX' : 'Text'}><textarea className="content-input" aria-label={object.kind === 'equation' ? 'LaTeX expression' : 'Text content'} value={state.text} onChange={e => update({ text: e.target.value })} rows={3} spellCheck={false}/><Field label="Size"><NumberInput value={state.fontSize} label="Font size" onChange={fontSize => update({ fontSize, ...(object.kind === 'equation' ? { width: state.width * fontSize / Math.max(1, state.fontSize), height: state.height * fontSize / Math.max(1, state.fontSize) } : {}) })} min={8} max={400} suffix="px"/></Field></Section>}

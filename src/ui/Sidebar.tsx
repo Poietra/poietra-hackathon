@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { Menu } from '@base-ui/react/menu';
-import { ChevronDown, ChevronRight, Circle, Eye, EyeOff, Layers2, LockKeyhole, UnlockKeyhole, Plus, Search, Square, Spline, Sigma, Type, ArrowUpRight, Minus, Link2, MoreHorizontal, Copy, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Circle, Eye, EyeOff, Layers2, LockKeyhole, UnlockKeyhole, Plus, Search, Square, Spline, Sigma, Type, ArrowUpRight, Minus, Group, MoreHorizontal, Copy, Trash2 } from 'lucide-react';
 import { useEditor } from '../editor/context';
 import { deleteComposition, duplicateComposition } from '../editor/structure';
 import { orderedObjects, type ObjectKind, type SceneObject } from '../../shared/model';
 import { IconButton } from './components';
 import { cn } from './utils';
+import { groupMembers } from '../editor/groups';
+import './groups.css';
 
 export function ObjectIcon({ kind, size = 15 }: { kind: ObjectKind; size?: number }) {
   const Component = { circle: Circle, rectangle: Square, text: Type, equation: Sigma, path: Spline, arrow: ArrowUpRight, numberline: Minus }[kind];
@@ -13,11 +15,12 @@ export function ObjectIcon({ kind, size = 15 }: { kind: ObjectKind; size?: numbe
 }
 
 export function Sidebar({ onNewScene }: { onNewScene: () => void }) {
-  const { scene, store, compositionId, selectedIds, setSelectedIds, selection, select, notify, viewingPlayback } = useEditor();
+  const { scene, store, compositionId, selectedIds, setSelectedIds, selection, select, notify, viewingPlayback, appendComposition } = useEditor();
   const [searching, setSearching] = useState(false); const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState(new Set<string>());
   // The top row is the frontmost layer; SVG paints the reverse of this order.
   const objects = orderedObjects(scene).reverse().filter(object => object.name.toLowerCase().includes(query.toLowerCase()));
+  const groupIds = [...new Set(orderedObjects(scene).map(object => object.groupId).filter(Boolean))];
   function toggleGroup(id: string) { const next = new Set(collapsed); if (next.has(id)) next.delete(id); else next.add(id); setCollapsed(next); }
   function changeComposition(id: string, action: 'duplicate' | 'delete') {
     store.undoManager.stopCapturing();
@@ -46,6 +49,7 @@ export function Sidebar({ onNewScene }: { onNewScene: () => void }) {
     <div className="new-scene-row"><button className="new-scene-button" onClick={onNewScene} disabled={(store.snapshot().project?.sceneOrder.length ?? 0) >= 100}><Square size={13}/><span>New scene</span><span className="shortcut">＋</span></button><IconButton label="レイヤーを検索" active={searching} onClick={() => setSearching(!searching)}><Search size={15}/></IconButton></div>
     <div className="sidebar-scene-title"><span>Scenes</span><ChevronDown size={13}/></div>
     <div className="sidebar-section-heading"><span>Layers</span><span className="muted">{Object.keys(scene.objects).length}</span></div>
+    {selectedIds.length > 0 && <div className="layer-selection-summary" role="status"><span>{selectedIds.length} selected</span><span>Shift + click</span></div>}
     {searching && <div className="layer-search"><Search size={13}/><input autoFocus aria-label="レイヤーを検索" placeholder="Find a layer…" value={query} onChange={e => setQuery(e.target.value)}/></div>}
     <div className="layer-tree">
       {objects.map((object, index) => {
@@ -55,12 +59,13 @@ export function Sidebar({ onNewScene }: { onNewScene: () => void }) {
         if (objects[index - 1]?.groupId === object.groupId) return null;
         const group: SceneObject[] = [];
         for (let cursor = index; cursor < objects.length && objects[cursor].groupId === object.groupId; cursor++) group.push(objects[cursor]);
-        const linked = Object.values(scene.objects).filter(item => item.groupId === object.groupId);
-        return <div className="layer-group" key={`${object.groupId}-${object.id}`}><div className="group-heading"><button className="group-chevron" aria-label="グループを開閉" onClick={() => toggleGroup(object.groupId!)}>{collapsed.has(object.groupId) ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button className="group-select" onClick={() => setSelectedIds(linked.map(o => o.id))}><Link2 size={13}/><span>Linked group</span><small>{linked.length}</small></button></div>{!collapsed.has(object.groupId) && group.map(o => row(o, true))}</div>;
+        const linked = groupMembers(scene, object.groupId);
+        const groupSelected = linked.every(member => selectedIds.includes(member.id));
+        return <div className="layer-group" key={`${object.groupId}-${object.id}`} data-group-id={object.groupId}><div className={cn('group-heading', groupSelected && 'selected')}><button className="group-chevron" aria-label="グループを開閉" aria-expanded={!collapsed.has(object.groupId)} onClick={() => toggleGroup(object.groupId!)}>{collapsed.has(object.groupId) ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button className="group-select" aria-label={`Select group: ${linked.map(member => member.name).join(', ')}`} aria-pressed={groupSelected} onClick={event => { const ids = linked.map(member => member.id); setSelectedIds(event.shiftKey ? groupSelected ? selectedIds.filter(id => !ids.includes(id)) : [...new Set([...selectedIds, ...ids])] : ids); }}><Group size={13}/><span>Group {groupIds.indexOf(object.groupId) + 1}</span><small>{linked.length}</small></button></div>{!collapsed.has(object.groupId) && group.map(o => row(o, true))}</div>;
       })}
       {objects.length === 0 && <p className="sidebar-empty">{query ? '一致するレイヤーがありません' : 'ツールで最初のオブジェクトを追加'}</p>}
     </div>
-    <div className="composition-list"><div className="sidebar-section-heading"><span>Compositions</span><IconButton label="Composition を追加" onClick={() => select({ kind: 'composition', id: store.addComposition(scene.id) })}><Plus size={16}/></IconButton></div>{scene.compositionOrder.map(id => {
+    <div className="composition-list"><div className="sidebar-section-heading"><span>Compositions</span><IconButton label="Composition を追加" onClick={appendComposition}><Plus size={16}/></IconButton></div>{scene.compositionOrder.map(id => {
       const composition = scene.compositions[id];
       if (!composition) return null;
       return <div key={id} data-composition-id={id} className="group flex items-center gap-0.5">
