@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { AiRequestSchema, aiErrorMessage, createEditProposal, imageQuality } from './ai';
+import { AiRequestSchema, aiErrorMessage, createEditProposal, imageQuality, responseTuning } from './ai';
 import { getRoom, ROOM_PATTERN, rooms } from './collaboration';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { handleImages, saveRoomImage } from './images';
@@ -49,7 +49,7 @@ server.on('request', async (request, response) => {
       room = getRoom(input.roomId);
       if (room.aiBusy || Date.now() - room.aiLastRequest < 2000) { json(response, 429, { error: '前の依頼を処理しています。少し待ってからお試しください。' }); return; }
       room.aiBusy = true; room.aiLastRequest = Date.now(); ownsRequest = true;
-      json(response, 200, await createEditProposal(room.doc, input, apiKey, model, { images: { model: imageModel, quality: imageQuality(process.env.OPENAI_IMAGE_QUALITY), store: bytes => saveRoomImage(input.roomId, bytes) } }));
+      json(response, 200, await createEditProposal(room.doc, input, apiKey, model, { images: { model: imageModel, quality: imageQuality(process.env.OPENAI_IMAGE_QUALITY), store: bytes => saveRoomImage(input.roomId, bytes) }, tuning: responseTuning(process.env) }));
     } catch (error) {
       json(response, 400, { error: aiErrorMessage(error) });
     } finally { if (room && ownsRequest) room.aiBusy = false; }

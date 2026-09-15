@@ -6,12 +6,13 @@ import { validateProposalForApply } from '../shared/ai';
 
 const { parse, generate, constructed } = vi.hoisted(() => ({ parse: vi.fn(), generate: vi.fn(), constructed: [] as unknown[] }));
 vi.mock('openai', () => ({ default: class { constructor(options: unknown) { constructed.push(options); } responses = { parse }; images = { generate }; static APIError = class extends Error {}; } }));
-import { AiRequestSchema, createEditProposal, type AiRequest } from '../server/ai';
+import OpenAI from 'openai';
+import { AiRequestSchema, createEditProposal, responseTuning, responseTuningState, type AiRequest } from '../server/ai';
 
 let doc: Y.Doc;
 const input: AiRequest = { roomId: 'ai-unit-test-room', sceneId: 'scene-1', compositionId: 'comp-1', transitionId: null, selectedIds: ['circle'], prompt: '円を中央に' };
 beforeEach(() => {
-  doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); generate.mockReset(); constructed.length = 0;
+  doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); generate.mockReset(); constructed.length = 0; responseTuningState.disabled = false;
   vi.spyOn(console, 'log').mockImplementation(() => {}); vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 afterEach(() => { doc.destroy(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -367,4 +368,46 @@ test('real SDK Retry-After plus repair cannot outlive the 170 second request dea
   expect(fetch).toHaveBeenCalledTimes(3);
   expect(vi.mocked(console.log)).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+const tuning = responseTuning({});
+test('speed tuning sends low reasoning effort and the fast service tier by default, and env can remove them', async () => {
+  parse.mockResolvedValueOnce(centered);
+  await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { tuning });
+  expect(parse.mock.calls[0][0]).toMatchObject({ reasoning: { effort: 'low' }, service_tier: 'fast' });
+  expect(responseTuning({ OPENAI_REASONING_EFFORT: 'default', OPENAI_SERVICE_TIER: 'off' })).toEqual({});
+  expect(responseTuning({ OPENAI_REASONING_EFFORT: 'minimal', OPENAI_SERVICE_TIER: 'priority' })).toEqual({ reasoningEffort: 'minimal', serviceTier: 'priority' });
+  parse.mockResolvedValueOnce(centered);
+  await createEditProposal(doc, input, 'test-key-never-sent', 'test-model');
+  expect(parse.mock.calls[1][0]).not.toHaveProperty('reasoning'); expect(parse.mock.calls[1][0]).not.toHaveProperty('service_tier');
+  expect(JSON.parse(vi.mocked(console.log).mock.calls[0][0])).toMatchObject({ event: 'ai_proposal', tuning: { reasoningEffort: 'low', serviceTier: 'fast' } });
+});
+
+test('a 400 for the tuning falls back to defaults within the request and stays off afterwards', async () => {
+  const refused = Object.assign(new (OpenAI.APIError as unknown as new () => Error)(), { status: 400, message: 'Unsupported parameter: service_tier' });
+  parse.mockRejectedValueOnce(refused).mockResolvedValueOnce(centered).mockResolvedValueOnce(centered);
+  const proposal = await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { tuning });
+  expect(proposal.changes).toHaveLength(1);
+  expect(parse).toHaveBeenCalledTimes(2);
+  expect(parse.mock.calls[0][0]).toHaveProperty('service_tier', 'fast');
+  expect(parse.mock.calls[1][0]).not.toHaveProperty('service_tier'); expect(parse.mock.calls[1][0]).not.toHaveProperty('reasoning');
+  expect(JSON.parse(vi.mocked(console.warn).mock.calls[0][0])).toMatchObject({ event: 'ai_tuning_unsupported' });
+  await createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { tuning });
+  expect(parse).toHaveBeenCalledTimes(3); expect(parse.mock.calls[2][0]).not.toHaveProperty('reasoning');
+  responseTuningState.disabled = false;
+  parse.mockRejectedValueOnce(Object.assign(new (OpenAI.APIError as unknown as new () => Error)(), { status: 500, message: 'boom' }));
+  await expect(createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { tuning })).rejects.toThrow('boom');
+  expect(parse).toHaveBeenCalledTimes(4);
+});
+
+test('two pictures are generated at the same time', async () => {
+  const { images } = imageSink();
+  parse.mockResolvedValueOnce(withPicture([{ ...picture, ref: '@moon', name: 'Moon' }]));
+  const resolvers: Array<(value: unknown) => void> = [];
+  generate.mockImplementation(() => new Promise(resolve => resolvers.push(resolve)));
+  const pending = createEditProposal(doc, input, 'test-key-never-sent', 'test-model', { images });
+  await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(2));
+  for (const resolve of resolvers) resolve({ data: [{ b64_json: encodedWebp }] });
+  const proposal = await pending;
+  expect(proposal.changes.filter(change => change.path[2] === 'objects')).toHaveLength(2);
 });

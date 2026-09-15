@@ -133,6 +133,8 @@ cp .env.example .env
 | `OPENAI_MODEL` | `gpt-6-astra` | 構造化された編集案の生成 |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-1` | 画像素材の生成 |
 | `OPENAI_IMAGE_QUALITY` | `medium` | 画像品質。`low` / `medium` / `high` |
+| `OPENAI_REASONING_EFFORT` | `low` | 文章モデルの推論量。`none` / `minimal` / `low` / `medium` / `high`。`default` で送らない |
+| `OPENAI_SERVICE_TIER` | `fast` | 処理の優先度。`fast` / `ultrafast` / `priority` / `flex`。`default` で送らない。モデルや契約が未対応の場合は自動で外して再送します |
 | `PORT` | `5173` | Node.js サーバーのポート |
 | `POIETRA_DATA_DIR` | `.data` | Node.js サーバーの保存先 |
 

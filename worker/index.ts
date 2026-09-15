@@ -5,7 +5,7 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { makeDemoProject } from '../shared/demo';
 import { initializeDocument } from '../shared/document';
-import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, imageQuality, type AiRequest } from '../server/ai';
+import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, imageQuality, responseTuning, type AiRequest } from '../server/ai';
 import { presenceMessage, readPresenceUpdate, type Presence } from './presence';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { IMAGE_ASSET_PATH, IMAGE_UPLOAD_PATH, IMAGE_ROOM_BYTES_LIMIT, imageDigest, imageHeaders, imageMime, readImageBody } from '../shared/images';
@@ -238,6 +238,7 @@ export class ProjectRoom extends DurableObject<Env> {
     try {
       const proposal = await createEditProposal(this.doc, input, this.env.OPENAI_API_KEY, this.env.OPENAI_MODEL, {
         images: { model: this.env.OPENAI_IMAGE_MODEL || 'gpt-image-1', quality: imageQuality(this.env.OPENAI_IMAGE_QUALITY), store: (bytes, mime) => this.saveImage(input.roomId, bytes, mime) },
+        tuning: responseTuning(this.env),
       });
       return { status: 200, body: proposal };
     } catch (error) { return { status: 400, body: { error: aiErrorMessage(error) } }; }
