@@ -65,7 +65,12 @@ export function applyChanges(doc: Y.Doc, changes: Change[], origin: unknown = LO
   doc.transact(() => {
     for (const { parent, key, value } of resolved) {
       if (value === undefined) parent.delete(key);
-      else parent.set(key, toShared(value));
+      // An unchanged leaf still creates a new Yjs Item if written. That stale
+      // Item can win over a concurrent peer edit (e.g. extending a Transition
+      // must not rewrite every unchanged track's timing). Compare here, after
+      // earlier changes in this same transaction, preserving ordered writes
+      // and the explicit replacement semantics of maps/arrays.
+      else if (!Object.is(parent.get(key), value)) parent.set(key, toShared(value));
     }
   }, origin);
 }
