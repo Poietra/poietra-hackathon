@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { defaultState } from '../shared/model';
-import { localToWorld, resizeFromCorner, rotationFromPointer, worldToLocal } from '../src/editor/geometry';
+import { localToWorld, pointInRotatedBounds, resizeFromCorner, rotationFromPointer, worldToLocal } from '../src/editor/geometry';
 
 describe('canvas transforms', () => {
+  it('selects empty areas of a rotated visual box without selecting its enclosing axis-aligned corners', () => {
+    const state = { x: 300, y: 220, rotation: 45 }, bounds = { x: 200, y: 200, width: 200, height: 40 };
+    expect(pointInRotatedBounds(localToWorld({ x: 85, y: 12 }, state), bounds, state)).toBe(true);
+    expect(pointInRotatedBounds(localToWorld({ x: 0, y: 35 }, state), bounds, state)).toBe(false);
+    expect(pointInRotatedBounds({ x: 370, y: 160 }, bounds, state)).toBe(false);
+  });
   it('keeps the opposite world-space corner fixed while resizing a rotated shape', () => {
     const state = defaultState('rectangle', { x: 340, y: 260, width: 180, height: 100, rotation: 37 });
     const fixed = localToWorld({ x: -90, y: -50 }, state);

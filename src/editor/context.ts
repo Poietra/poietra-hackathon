@@ -11,6 +11,8 @@ export interface EditorContextValue {
   scene: Scene;
   selection: Selection;
   select: (selection: Selection) => void;
+  appendComposition: () => void;
+  requestTextEdit: (objectId: string, compositionId: string) => void;
   compositionId: string;
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;

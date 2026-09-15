@@ -131,3 +131,90 @@ test('a peer changing the same track during a drag keeps their timing', async ({
   await expect(alice.getByRole('spinbutton', { name: 'Animation duration', exact: true })).toHaveValue('600');
   await a.close(); await b.close();
 });
+
+const previewPosition = (page: Page) => page.getByRole('slider', { name: 'Transition preview position', exact: true });
+const seekHandle = (page: Page) => page.locator('.track-seek-thumb');
+async function expectSeek(page: Page, value: number) {
+  await expect(previewPosition(page)).toHaveValue(String(value));
+  await expect(page.getByRole('slider', { name: 'Transition の再生ヘッド', exact: true })).toHaveValue(String(value));
+  await expect(page.locator('.preview-transport')).toContainText(`${value.toLocaleString('en-US')} / 800 ms`);
+  await expect(page.locator('.time-code strong')).toHaveText((1000 + value).toLocaleString('en-US'));
+  const lane = await page.locator('.track-lane').first().boundingBox();
+  expect((await page.locator('.track-playhead').boundingBox())!.x).toBeCloseTo(lane!.x + lane!.width * value / 800, 0);
+}
+
+test('the bottom ruler and wide playhead drag pause playback, hold the frame, and leave shared edits unchanged', async ({ browser }) => {
+  const context = await browser.newContext(), other = await browser.newContext();
+  const alice = await context.newPage(), bob = await other.newPage(), room = crypto.randomUUID();
+  await Promise.all([open(alice, room), open(bob, room)]); await transition(alice);
+  const socket = new URL(alice.url()); socket.protocol = socket.protocol === 'https:' ? 'wss:' : 'ws:'; socket.pathname = '/sync'; socket.search = '';
+  const doc = new Y.Doc(), provider = new WebsocketProvider(socket.toString(), room, doc, { WebSocketPolyfill: WebSocket as never, disableBc: true });
+  try {
+    await new Promise<void>(resolve => provider.on('sync', synced => { if (synced) resolve(); }));
+    const before = doc.getMap('project').toJSON();
+    const ruler = await alice.locator('.track-seek-control').boundingBox();
+    await alice.getByRole('button', { name: 'Transition をプレビュー', exact: true }).click();
+    await alice.mouse.click(ruler!.x + ruler!.width / 2, ruler!.y + 3);
+    await expectSeek(alice, 400);
+    await expect(alice.getByRole('button', { name: 'Transition をプレビュー', exact: true })).toBeVisible();
+    const handle = await seekHandle(alice).boundingBox();
+    expect(handle!.width).toBeGreaterThanOrEqual(28);
+    // Grab away from the fine center line to exercise the wider hit target.
+    const offset = 8, y = handle!.y + handle!.height - 5;
+    await alice.mouse.move(handle!.x + handle!.width / 2 + offset, y); await alice.mouse.down();
+    await alice.mouse.move(ruler!.x + ruler!.width + 70, y, { steps: 4 });
+    await expectSeek(alice, 800);
+    await expect(alice.locator('[data-testid="stage-to"] [data-object-id="circle"]')).toHaveAttribute('transform', 'translate(955 190) rotate(0)');
+    await alice.mouse.move(ruler!.x - 40, y, { steps: 4 });
+    await expectSeek(alice, 0);
+    await expect(alice.locator('[data-testid="stage-to"] [data-object-id="circle"]')).toHaveAttribute('transform', 'translate(245 520) rotate(0)');
+    await alice.mouse.move(ruler!.x + ruler!.width * 3 / 8 + offset, y, { steps: 4 }); await alice.mouse.up();
+    await expectSeek(alice, 300);
+    await expect(alice.locator('[data-testid="stage-to"] [data-object-id="circle"]')).toHaveAttribute('transform', 'translate(588.75 355) rotate(0)');
+    await alice.waitForTimeout(180); await expectSeek(alice, 300);
+    await expect(alice.getByRole('spinbutton', { name: 'Animation start', exact: true })).toHaveValue('0');
+    await expect(alice.getByRole('spinbutton', { name: 'Animation duration', exact: true })).toHaveValue('600');
+    expect(doc.getMap('project').toJSON()).toEqual(before);
+    await expect(bob.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('245');
+    await expect(bob.getByRole('spinbutton', { name: 'Position Y', exact: true })).toHaveValue('520');
+  } finally { provider.destroy(); doc.destroy(); await context.close(); await other.close(); }
+});
+
+test('bottom seeking follows the visible ruler after scrolling at a narrow width and supports keyboard boundaries', async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 850 }); await open(page);
+  await page.locator('.composition-list').getByRole('button', { name: 'Composition を追加', exact: true }).click();
+  await page.locator('.composition-list').getByRole('button', { name: 'Composition を追加', exact: true }).click();
+  await page.getByRole('button', { name: 'Transition 800 ms', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Sigmoid path', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Animation type', exact: true }).selectOption('fade');
+  await page.getByRole('button', { name: 'Circle', exact: true }).click();
+  // The composition strip can scroll independently from the time ruler.
+  const strip = page.locator('.composition-strip');
+  await strip.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+  expect(await strip.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  const tracks = page.locator('.transition-tracks');
+  await page.locator('.track-lane').first().hover(); await page.mouse.wheel(0, 15);
+  await expect.poll(() => tracks.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const ruler = await page.locator('.track-seek-control').boundingBox();
+  await page.mouse.click(ruler!.x + ruler!.width * 0.75, ruler!.y + 3);
+  await expectSeek(page, 600);
+  const handle = await seekHandle(page).boundingBox();
+  await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height - 5); await page.mouse.down();
+  await page.mouse.move(ruler!.x + ruler!.width / 4, handle!.y + handle!.height - 5, { steps: 4 }); await page.mouse.up();
+  await expectSeek(page, 200);
+  const slider = page.getByRole('slider', { name: 'Transition の再生ヘッド', exact: true });
+  await slider.focus(); await slider.press('End'); await expectSeek(page, 800);
+  await slider.press('ArrowRight'); await expectSeek(page, 800);
+  await slider.press('Home'); await expectSeek(page, 0);
+  await slider.press('ArrowLeft'); await expectSeek(page, 0);
+  await slider.press('ArrowRight'); await expectSeek(page, 1);
+  await slider.press('Shift+ArrowRight'); await expectSeek(page, 101);
+  await expect(slider).toHaveAttribute('aria-valuetext', '101 / 800 ms');
+  await expect(page.getByRole('spinbutton', { name: 'Animation start', exact: true })).toHaveValue('0');
+  await expect(page.getByRole('spinbutton', { name: 'Animation duration', exact: true })).toHaveValue('600');
+  // Undo removes the last track addition, rather than any of the seek steps.
+  await page.keyboard.press('Tab'); await page.keyboard.press('Control+z');
+  await expect(page.getByRole('button', { name: /^Sigmoid path Fade:/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Composition 4', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Composition 3', exact: true })).toBeVisible();
+});
