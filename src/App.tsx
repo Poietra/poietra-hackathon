@@ -27,7 +27,8 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
   const [rightTab, setRightTab] = useState<'properties'|'assistant'>('properties'); const [shareOpen, setShareOpen] = useState(false); const [helpOpen, setHelpOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false); const [copied, setCopied] = useState(false); const [name, setName] = useState(store.userName);
   const [toast, setToast] = useState(''); const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [renderReady, setRenderReady] = useState(false); const [renderError, setRenderError] = useState('');
+  const [renderRevision, setRenderRevision] = useState(0); const [renderError, setRenderError] = useState('');
+  const renderReady = renderRevision > 0;
   const playStart = useRef({ time: 0, position: 0, end: 0 });
   const project = snapshot.project;
   const scene = project?.scenes[sceneId] ?? (project ? project.scenes[project.sceneOrder[0]] : null);
@@ -56,7 +57,7 @@ export function App({ store, kernel, renderer, exporter }: { store: EditorStore;
 
   useEffect(() => {
     if (!scene) return; let current = true;
-    renderer.prepareScene(scene).then(() => { if (current) { setRenderReady(true); setRenderError(''); } }).catch(error => { if (current) setRenderError(error instanceof Error ? error.message : '描画を準備できませんでした。'); });
+    renderer.prepareScene(scene).then(() => { if (current) { setRenderRevision(value => value + 1); setRenderError(''); } }).catch(error => { if (current) setRenderError(error instanceof Error ? error.message : '描画を準備できませんでした。'); });
     return () => { current = false; };
   }, [scene, renderer]);
   useEffect(() => {

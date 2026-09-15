@@ -1,0 +1,2 @@
+# Copy to .dev.vars for local Workers development. Keep real values out of Git.
+OPENAI_API_KEY=

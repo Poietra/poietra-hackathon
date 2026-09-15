@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "poietra-hackathon",
+  "account_id": "1c93af48e1a5c2e163edc9030cff4647",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/sync/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "ProjectRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectRoom"] }],
+  "vars": { "OPENAI_MODEL": "gpt-6-astra" },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "ratelimits": [{
+    "name": "AI_LIMIT",
+    "namespace_id": "1001",
+    "simple": { "limit": 6, "period": 60 }
+  }]
+}

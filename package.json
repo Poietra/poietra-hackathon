@@ -9,14 +9,18 @@
   },
   "scripts": {
     "dev": "node --env-file-if-exists=.env --import tsx server/index.ts",
+    "dev:worker": "wrangler dev --port 8787 --local",
     "start": "NODE_ENV=production node --env-file-if-exists=.env --import tsx server/index.ts",
     "build:wasm": "node scripts/build-wasm.mjs",
     "build": "pnpm build:wasm && pnpm typecheck && vite build",
     "build:web": "pnpm typecheck && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "cf:types": "wrangler types worker/worker-configuration.d.ts",
+    "deploy": "pnpm build:web && wrangler deploy",
     "test": "vitest run",
     "test:core": "cargo test --manifest-path core/Cargo.toml",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:export": "playwright test --config tests/e2e/export.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "1.8.0",
@@ -50,6 +54,7 @@
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vite": "8.3.0",
-    "vitest": "5.0.0"
+    "vitest": "5.0.0",
+    "wrangler": "4.131.2"
   }
 }

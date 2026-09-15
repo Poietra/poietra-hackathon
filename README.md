@@ -14,14 +14,52 @@ pnpm build:wasm
 pnpm dev
 ```
 
-開発サーバーは `http://localhost:5173`。画面は実装中です。描画・書き出しは下記の専用検証ページで確認できます。
+開発サーバーは `http://localhost:5173`。Composition の配置・表示期間、オブジェクト別の Transition、ベジェ移動パス、連結・整列、共同編集、数式と動画書き出しを実装しています。AI はサーバー側のキーを設定すると使えます。
 
 AI はサーバーの `OPENAI_API_KEY` を使います。設定例は [.env.example](.env.example)。実際のキーは `.env` に設定し、Git には含めません。
 
 ```bash
 pnpm typecheck
+pnpm test
 pnpm test:core
+pnpm test:e2e
 ```
+
+## 共有環境（Cloudflare）
+
+[Poietra を開く](https://poietra-hackathon.yumaboda-official.workers.dev)
+
+Workers が画面と API を配信し、部屋ごとの Durable Object が WebSocket 同期と SQLite 保存を担当します。描画・Rust WASM の時間評価・WebCodecs 書き出しはブラウザで行います。
+
+```bash
+pnpm build:web
+pnpm dev:worker
+# 別ターミナル: 本番と同じ Workers 実行環境で共同編集を検証
+POIETRA_TEST_URL=http://127.0.0.1:8787 pnpm test:e2e
+```
+
+配置先は Yumaboda の Cloudflare アカウントです。`wrangler.jsonc` の `account_id` に固定しています。別アカウントに配置するときはこの値を変更してください。
+
+```bash
+pnpm exec wrangler login
+pnpm deploy
+# AI のキーをサーバー側の Secret に設定（対話入力）
+pnpm exec wrangler secret put OPENAI_API_KEY
+```
+
+ローカルの Workers で AI を試す場合は `.dev.vars.example` を `.dev.vars` にコピーしてキーを設定します。キーをクライアントや Git に含めないでください。
+
+Share でコピーした URL を別のブラウザで開くと、同じ部屋に参加します。リンクを知っている人が編集できます。編集データはサーバーと各ブラウザに保存され、再接続時に同期されます。再生位置・選択は各自で操作でき、取り消しは自分の変更が対象です。
+
+## デモの流れ
+
+1. Share の URL を別の PC でも開き、円の位置や色を変更して同期を確認する。
+2. Composition 2 を選び、同じ円の別の配置を調整する。
+3. Transition を選び、Move と Equation の Write を別々に調整する。円を選び `Edit Bézier path` で移動経路を曲げる。
+4. Preview で動きを確認する。AI 接続済みの場合は Assistant に変更を頼み、編集案を Apply する。
+5. Export で MP4 または WebM を書き出す。Chrome / Edge を使用する。
+
+検証済み: Rust 3 件、描画・書き出し・同期データの単体テスト 36 件、共同編集のブラウザテスト 4 件、書き出しのブラウザテスト 5 件。AI の実 API 呼び出しはキーの設定後に検証します。
 
 ## 実装の分担
 

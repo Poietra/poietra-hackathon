@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["./worker/worker-configuration.d.ts", "node"]
+  },
+  "include": ["worker", "shared", "server/ai.ts"]
+}

@@ -128,6 +128,9 @@ Composition・Transition の具体的な保存形式や、ベジェ曲線の編�
 - ブラウザでの動きの数値計算は Rust の WASM とし、型付きの編集データと時刻からフレームを評価する処理を UI から分離する。利用できる Rust ツールチェーンで直ちにビルドでき、短時間で実行・検証できることを優先した。
 - AI は OpenAI Responses API で構造化された編集案を返し、人間が適用する。API キーはサーバー側に置く。キーの設定場所は発案者から後で共有される。
 - 別の PC からも共同編集に参加できる共有 URL を用意する（発案者が確認）。
+- 共有環境は Cloudflare Workers に配置し、画面・WASM・フォントを Static Assets、API を Worker、Yjs の同期と保存を部屋ごとの SQLite Durable Object で扱う。開発 PC の起動に依存せず、別の PC から同じリンクで参加できる構成を優先した（2026-09-15）。Node.js サーバーはローカル開発用に残す。
+- 配置先は Yumaboda の Cloudflare アカウントとする（2026-09-15、発案者の指定）。`wrangler.jsonc` の `account_id` をこのアカウントに固定する。
+- 参加は推測困難なルーム ID を含む共有リンクを使う。リンクを知っている人は編集できる。選択・カーソルは在室者の表示に使い、再生位置は各ブラウザで独立させる。変更はプロパティ単位で同期し、取り消しは自分の操作を対象にする。
 - Furukawa（GitHub: `furukawa1020`）に描画・数式 Write・WebCodecs 書き出しを分担する。UI・同期との並行作業を可能にするため、`src/engine/render-contract.ts` に呼び出し口を固定する。担当範囲と完了条件は GitHub Issue に記載する。
 
 ## 技術候補と着想

@@ -1,10 +1,12 @@
 import { defineConfig } from '@playwright/test';
 
+const baseURL = process.env.POIETRA_TEST_URL || 'http://127.0.0.1:5173';
 export default defineConfig({
   testDir: './tests/e2e',
+  testMatch: 'editor.spec.ts',
   fullyParallel: true,
   workers: 2,
   timeout: 30000,
-  use: { baseURL: 'http://127.0.0.1:5173', viewport: { width: 1440, height: 900 }, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
-  webServer: { command: 'pnpm dev', url: 'http://127.0.0.1:5173/api/health', reuseExistingServer: !process.env.CI },
+  use: { baseURL, viewport: { width: 1440, height: 900 }, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
+  webServer: process.env.POIETRA_TEST_URL ? undefined : { command: 'pnpm dev', url: `${baseURL}/api/health`, reuseExistingServer: !process.env.CI },
 });
