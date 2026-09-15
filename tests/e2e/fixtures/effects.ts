@@ -4,7 +4,8 @@ import { evaluateScene, type Frame } from '../../../src/engine/evaluate';
 import { exportScene, getExportCapabilities } from '../../../src/engine/export';
 import { loadKernel } from '../../../src/engine/kernel';
 import { createFramePainter } from '../../../src/engine/painter';
-import { prepareScene } from '../../../src/engine/renderer';
+import { frameToSvg, prepareScene } from '../../../src/engine/renderer';
+import { withSvgImage } from '../../../src/engine/rendering/svg-image';
 import { BENCHMARK, EFFECTS_DEMO, makeBenchmarkScene, makeEffectsScene, sceneTimes, setSceneGlow } from './effects-scene';
 import { installEffectsProbe } from './effects-probe';
 import { OBJECT_REGION_PADDING, readPixels as pixels, readPixel as pixel, comparePixels as difference, measureRegion as region } from './effects-pixels';
@@ -136,6 +137,36 @@ async function exportVideo(format: 'mp4' | 'webm') {
 
 const fixture = {
   times,
+  async smallText() {
+    stop();
+    const reports = [];
+    const energy = (target: HTMLCanvasElement) => {
+      const data = pixels(target).data;
+      let sum = 0;
+      for (let index = 0; index < data.length; index += 4) sum += data[index] + data[index + 1] + data[index + 2];
+      return sum;
+    };
+    for (const width of [762, 392, 1280]) {
+      for (const text of ['03   FOLLOW THE GRADIENT', '0'.repeat(30)]) {
+        const frame: Frame = { width: 1280, height: 720, background: '#000000', objects: [{
+          object: { id: 'small-text', kind: 'text', name: 'Small text', groupId: null, locked: false, order: 0 },
+          state: defaultState('text', { x: 640, y: 360, fontSize: 15, text, fill: '#ffffff', strokeWidth: 0 }),
+          writeProgress: 1, order: 'together',
+        }] };
+        const actual = canvas(width, Math.round(width * 720 / 1280));
+        const reference = canvas(actual.width, actual.height);
+        const instance = await createFramePainter(actual);
+        try {
+          await instance.render(frame);
+          // Rasterize the entire SVG at the same pixel density, without any object crop.
+          const svg = frameToSvg(frame).replace(/<svg\b[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" width="${reference.width}" height="${reference.height}" viewBox="0 0 1280 720">`);
+          await withSvgImage(svg, undefined, image => reference.getContext('2d')!.drawImage(image, 0, 0));
+          reports.push({ width, text, actualEnergy: energy(actual), referenceEnergy: energy(reference) });
+        } finally { instance.dispose(); }
+      }
+    }
+    return reports;
+  },
   async smoke() {
     stop();
     const frame = await renderAt(times.settled, false);

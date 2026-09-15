@@ -88,9 +88,9 @@ function textMarkup(item: RenderObject, prefix: string): string {
       ? Array.from(line).map(character => `<tspan opacity="${n(unit(progress * glyphCount - index++))}">${escapeXml(character)}</tspan>`).join('') : escapeXml(line);
     return `<text x="0" y="${n((lineIndex - (lines.length - 1) / 2) * metrics.lineHeight + metrics.baseline)}" text-anchor="middle" xml:space="preserve">${text}</text>`;
   }).join('');
-  if (item.order === 'sequential' || progress >= 1) return `<g font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
+  if (item.order === 'sequential' || progress >= 1) return `<g text-rendering="geometricPrecision" font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
   const bounds = textSize(item);
-  return `<defs><clipPath id="${prefix}-text"><rect x="${n(-bounds.width / 2)}" y="${n(-bounds.height / 2 - size * 0.2)}" width="${n(bounds.width * progress)}" height="${n(bounds.height + size * 0.4)}"/></clipPath></defs><g clip-path="url(#${prefix}-text)" font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
+  return `<defs><clipPath id="${prefix}-text"><rect x="${n(-bounds.width / 2)}" y="${n(-bounds.height / 2 - size * 0.2)}" width="${n(bounds.width * progress)}" height="${n(bounds.height + size * 0.4)}"/></clipPath></defs><g clip-path="url(#${prefix}-text)" text-rendering="geometricPrecision" font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
 }
 
 function shapeMarkup(item: RenderObject, prefix: string): string {
