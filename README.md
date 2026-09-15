@@ -121,7 +121,8 @@ pnpm exec playwright test --config tests/e2e/export.config.ts
 `createFramePainter(canvas)`（[painter.ts](src/engine/painter.ts)）は、評価済みの `Frame` を Canvas に描きます。`prepareScene(scene)` を済ませ、同じ painter の `render(frame, { signal })` を直列に呼んでください。出力は Canvas の現在の寸法に合わせ、Scene の縦横比を保ちます。`dispose()` は描画中でも呼べ、繰り返し呼んでも安全です。契約は [painter-contract.ts](src/engine/painter-contract.ts) に従います。
 
 - **描画**: 対象オブジェクトだけを透明な画像にし、GLSL の横・縦 Gaussian ぼかしと元画像の合成で Glow を描きます。強さと余白は SVG と同じ定義を参照します。Write・回転・不透明度・表示順を反映し、完成したフレームだけを出力 Canvas にコピーします。
-- **再利用と解放**: 位置・回転・不透明度だけの変化では画像を再利用します。画像キャッシュは painter ごとに 32 MiB まで。画像と Object URL は読み込み処理、キャッシュは `LayerCache`、GPU 資源は Glow renderer が所有し、それぞれ解放します。
+- **数式の Write**: MathJax の字形パス・長さ・変形を一度準備し、Canvas の `Path2D` で描きます。完成した字形と描画途中の字形は同じパスを使い、進行度から輪郭と塗りを毎フレーム計算します。TeX が同じなら、色・文字サイズ・線幅・出力サイズの変更でも準備を再利用します。対応する形状は `g`・`path`・角丸のない `rect`。未対応の形状は数式単位で既存の SVG 画像に戻します。
+- **再利用と解放**: 位置・回転・不透明度だけの変化では画像を再利用します。`LayerCache` が painter ごとの画像と数式パス、作業 Canvas 1枚を所有し、削除・退避した項目のパスと画像を解放します。作業 Canvas は SVG 経路への切り替えと `dispose()` で解放します。保持画像の RGBA 容量と数式ソースの UTF-16 容量の合計は 32 MiB まで。Path2D の内部メモリは計測できないため、数式1件を 2,048 字形・ソース 1 MiB までに制限します。この予算には作業 Canvas と GPU のメモリを含みません。Object URL は画像読み込み処理、GPU 資源は Glow renderer が所有します。
 - **継続動作**: 出力 Canvas は 2D、WebGL2 は内部 Canvas で使います。WebGL2 非対応・context lost・GPU の描画失敗・大きすぎる画像では、既存 SVG と Canvas 2D に切り替えます。`backend` は現在の経路を返します。画像読み込みの失敗は呼び出し側へ返し、中断は `AbortError` になります。
 - **プレビューと動画**: 編集画面と MP4 / WebM の各フレームを同じ painter で描きます。プレビューは描画中の待機フレームを最新1枚にまとめ、描画済みの状態に選択判定を合わせます。動画は全フレームを描き、開始時点の Scene、出力サイズ、fps、進捗と中断の契約を維持します。
 
@@ -139,13 +140,36 @@ pnpm exec playwright test --config tests/e2e/export.config.ts
 
 本番ビルドの専用ページを検証する場合は `EFFECTS_PREVIEW=1` を設定します。比較画像・保存動画・JSON レポートは `test-results/effects/` に出力します。WebGL2 の実行、対象だけの Glow、日本語と数式の Write、変形、context lost、中断と資源解放、MP4 / WebM の復号フレームを確認します。
 
+### Write の回帰テストと計測
+
+```bash
+pnpm exec vite build --config tests/e2e/effects-write-build.config.ts
+pnpm exec playwright test --config tests/e2e/effects-write.config.ts
+```
+
+字形ごとの Together / Sequential、順方向・逆方向・近接時刻へのシーク、同じ ID の編集、出力サイズ変更、中断・解放、SVG への退避を確認します。キャッシュを使う画像を新しい painter と比較し、数式の輪郭を元の SVG 描画とも照合します。結果は `test-results/issue-5/regression/` に保存します。
+
+性能測定は他のブラウザ処理を止め、`RUN_WRITE_BENCHMARK=1` と `WRITE_RESULTS_DIR=../../test-results/issue-5/after` を設定して同じテストを実行します。`BENCHMARK_REVISION` に対象のコミットを指定すると JSON に記録します。画像の読み込み数と GPU 転送数はブラウザ API の呼び出しを数えた値で、ブラウザ内部のデコード回数ではありません。
+
 ### 描画時間
 
-2026-09-15、Windows / Chrome 152.0.7977.84（headless）、Intel UHD Graphics（ANGLE / Direct3D 11）、実際の `webgl2` 経路で測定しました。1280×720、図形・数式16個、8フレームのウォームアップ後に60フレームを計測しています。
+2026-09-15、Windows / Chrome 152.0.7977.84（headless）、Intel UHD Graphics（ANGLE / Direct3D 11）、本番ビルドの `webgl2` 経路で変更前後を同じ手順で測定しました。変更前は `3adfa78`、変更後は Issue #5 の数式パス再利用を適用したものです。1280×720、図形・数式16個、8フレームのウォームアップ後に60フレームを計測しています。
 
-| 内容 | 平均 | 中央値 | 95パーセンタイル |
+| 内容 | 平均（前 → 後） | 中央値（前 → 後） | 95パーセンタイル（前 → 後） |
 | --- | ---: | ---: | ---: |
-| 移動・回転・数式4個の Write | 48.56 ms | 50.40 ms | 61.70 ms |
-| 移動・回転（画像を再利用） | 0.58 ms | 0.50 ms | 0.90 ms |
+| 移動・回転・数式4個の Write | 37.27 → 19.27 ms | 35.10 → 19.30 ms | 59.50 → 25.00 ms |
+| 移動・回転（画像を再利用） | 0.52 → 0.46 ms | 0.50 → 0.40 ms | 1.20 → 0.70 ms |
 
-値は `await painter.render(...)` の所要時間です。Write を含む結果は約20.6fps相当で、30fpsの目標は未達です。Write では字形が毎フレーム変わるため、SVG 画像の読み込みと GPU への転送が必要になります。移動・回転だけの場合は画像を再利用でき、この差が小さくなります。画面の実際のリフレッシュレートを測った値ではありません。
+Write の平均は目標の 33.3 ms を下回りました。60フレーム中の SVG 画像要求は 232 → 0 回、GPU 転送は 232 → 232 回です。変化する字形を Glow に渡す転送は残し、SVG 画像を作り直す処理を省いた結果です。
+
+`makeCalculusProject()` は25オブジェクト・13.3秒。冒頭の静止状態で8回ウォームアップし、30fpsの全399フレームを時刻順に計測しました。遷移で初めて現れる字形の準備時間も含みます。
+
+| 範囲 | 平均（前 → 後） | 中央値（前 → 後） | 95パーセンタイル（前 → 後） |
+| --- | ---: | ---: | ---: |
+| 全体 | 11.74 → 6.82 ms | 0.40 → 0.90 ms | 56.40 → 32.00 ms |
+| 最も重い区間 `reveal-loss`（2.6–4.4秒、54フレーム） | 41.15 → 26.83 ms | 41.30 → 26.40 ms | 65.00 → 48.40 ms |
+| `trace-gradient`（7.2–9.3秒、63フレーム） | 36.20 → 16.49 ms | 36.80 → 16.40 ms | 73.80 → 28.50 ms |
+
+Calculus 全体の SVG 画像要求は 386 → 219 回、GPU 転送は 1 → 1 回。図形・テキストを含む SVG 画像の処理が残り、最も重い区間の95パーセンタイルはまだ 33.3 ms を超えています。
+
+値は `await painter.render(...)` の所要時間で、フレーム評価・事前の `prepareScene`・表示更新の待機・GPU 完了待機は含みません。実際の再生 fps や全端末での30fpsを保証する値ではありません。以前の Write 計測は 48.56 ms でしたが、実行条件による変動があるため、上表には今回同じ手順で取り直した値を用いています。

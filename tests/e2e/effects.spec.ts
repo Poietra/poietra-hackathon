@@ -37,7 +37,11 @@ function expectMatchingVideo(report: VideoReport, backend: 'webgl2' | 'canvas2d'
     expect(sample.japanese.expected.ink).toBeGreaterThan(TOLERANCE.minimumTextInk);
     expect(sample.japanese.actual.ink).toBeGreaterThan(sample.japanese.expected.ink * TOLERANCE.retainedGlyphFraction);
     expect(sample.halo.actual.meanEnergy - backgroundEnergy).toBeGreaterThan((sample.halo.expected.meanEnergy - backgroundEnergy) * TOLERANCE.retainedHaloFraction);
-    if (sample.equation) expect(sample.equation.actual.ink).toBeGreaterThan(sample.equation.expected.ink * TOLERANCE.retainedGlyphFraction);
+    if (sample.equation) {
+      expect(sample.equation.expected.ink).toBeGreaterThan(0);
+      expect(sample.equation.actual.ink).toBeGreaterThan(sample.equation.expected.ink * TOLERANCE.retainedGlyphFraction);
+      expect(sample.equation.error.meanAbsoluteError).toBeLessThan(TOLERANCE.compressedFrameError);
+    }
   }
 }
 test.beforeEach(async ({ page }) => {

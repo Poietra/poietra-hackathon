@@ -34,6 +34,7 @@ export function sceneTimes(scene: Scene) {
     start: 0,
     writeStart: transition.start + track.start,
     writeMiddle: transition.start + track.start + track.duration / 2,
+    writeEnd: transition.start + track.start + track.duration,
     settled: transition.start + transition.duration,
     end: sceneDuration(scene),
   };

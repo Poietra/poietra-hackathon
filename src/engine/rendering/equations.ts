@@ -68,16 +68,24 @@ export async function prepareEquations(sources: string[]): Promise<void> {
 
 export function getEquation(source: string): Equation | null { return cache.get(source) ?? null; }
 
+export function equationGlyphProgress(progress: number, order: 'together' | 'sequential', glyphs: number, index: number): number {
+  return order === 'sequential' ? unit(progress * glyphs - index) : unit(progress);
+}
+
+export function equationFillProgress(progress: number): number {
+  return unit((progress - WRITE_FILL_START) / (1 - WRITE_FILL_START));
+}
+
 export function equationMarkup(equation: Equation, progress: number, order: 'together' | 'sequential'): string {
   let index = 0;
   const render = (node: MathNode): string => {
     const attributes = Object.entries(node.attributes).map(([key, value]) => ` ${key}="${escapeXml(value)}"`).join('');
     if (node.tag === 'g') return `<g${attributes}>${node.children.map(render).join('')}</g>`;
-    const glyphProgress = order === 'sequential' ? unit(progress * equation.glyphs - index++) : unit(progress);
+    const glyphProgress = equationGlyphProgress(progress, order, equation.glyphs, index++);
     if (glyphProgress === 0) return '';
     if (glyphProgress === 1) return `<${node.tag}${attributes}/>`;
     // Each glyph is drawn along its own outline; fills settle in at the end of its stroke.
-    const fillProgress = unit((glyphProgress - WRITE_FILL_START) / (1 - WRITE_FILL_START));
+    const fillProgress = equationFillProgress(glyphProgress);
     return `<g fill-opacity="${number(fillProgress)}" stroke="currentColor" stroke-width="${EQUATION_WRITE_STROKE_UNITS}" stroke-linecap="round" stroke-linejoin="round"><${node.tag}${attributes} pathLength="1" stroke-dasharray="1" stroke-dashoffset="${number(1 - glyphProgress)}"/></g>`;
   };
   return render(equation.tree);
