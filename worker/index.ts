@@ -227,7 +227,8 @@ export class ProjectRoom extends DurableObject<Env> {
     const lock = this.ctx.storage.sql.exec<{ until_ms: number }>('SELECT until_ms FROM ai_lock WHERE id = 1').toArray()[0];
     if (lock && lock.until_ms > now) return { status: 429, body: { error: '前の依頼を処理しています。少し待ってからお試しください。' } };
     const requestId = crypto.randomUUID();
-    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO ai_lock (id, request_id, until_ms) VALUES (1, ?, ?)', requestId, now + 120000);
+    // Covers one 60 s call retried once by the SDK plus one validation repair (see server/ai.ts).
+    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO ai_lock (id, request_id, until_ms) VALUES (1, ?, ?)', requestId, now + 180000);
     try {
       const proposal = await createEditProposal(this.doc, input, this.env.OPENAI_API_KEY, this.env.OPENAI_MODEL);
       return { status: 200, body: proposal };

@@ -64,7 +64,7 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
     restoreDraft(active); setRetry(null); setError('依頼を停止しました。編集内容はそのままです。');
   }
 
-  async function send(value = prompt, retryMessageId?: string) {
+  async function send(value = prompt, retryMessageId?: string, autoApply = false) {
     const text = value.trim(); if (!text) return;
     if (text.length > 3000) { setError('メッセージは 3,000 文字以内で入力してください。'); return; }
     const aiPrompt = codexPrompt(text);
@@ -106,10 +106,13 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
       if (!data || typeof data.id !== 'string' || typeof data.message !== 'string' || !Array.isArray(data.changes) || !Number.isFinite(data.count)) throw new Error('編集案を読み取れませんでした。もう一度お試しください。');
       const scene = editor.store.project().scenes[scope.sceneId];
       if (!scene) throw new Error('編集対象の Scene が削除されています。');
+      const assistantId = crypto.randomUUID();
       editor.store.doc.transact(() => {
         chat.patch(messageId, { status: 'complete' });
-        chat.append({ id: crypto.randomUUID(), role: 'assistant', content: data.message, proposal: data, scope, replyTo: messageId, authorId: editor.store.chatAuthorId, authorName: 'Codex', color: '#a79bf3', createdAt: Date.now() });
+        chat.append({ id: assistantId, role: 'assistant', content: data.message, proposal: data, scope, replyTo: messageId, authorId: editor.store.chatAuthorId, authorName: 'Codex', color: '#a79bf3', createdAt: Date.now() });
       });
+      // ⌘/Ctrl + Enter applies the guarded proposal as soon as it arrives; Undo stays the human's turn.
+      if (autoApply && data.changes.length) applyRef.current(assistantId, true);
     } catch (failure) {
       if (aiPrompt === null) { setError('メッセージを保存できませんでした。もう一度お試しください。'); restoreDraft(active); }
       if (request.current === active && !active.controller.signal.aborted) {
@@ -119,8 +122,8 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
     } finally { if (request.current === active) { request.current = null; setPending(null); } }
   }
 
-  function apply(message: Message) {
-    message = chat.snapshot().find(item => item.id === message.id)!;
+  function apply(messageId: string, automatic = false) {
+    const message = chat.snapshot().find(item => item.id === messageId);
     if (editor.viewingPlayback) { setError('編集に戻ってから適用してください。'); return; }
     if (!message?.proposal || message.authorId !== editor.store.chatAuthorId || message.applied || message.dismissed || appliedIds.current.has(message.id)) return;
     if (message.scope.sceneId !== editor.scene.id) { setError('対象の Scene に戻って適用してください。'); return; }
@@ -133,9 +136,11 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
       appliedIds.current.add(message.id);
       const created = targets.findLast(target => target.created && target.selection.kind === 'transition') ?? targets.findLast(target => target.created);
       if (created) { editor.select(created.selection); editor.setSelectedIds(created.objectIds); }
-      editor.notify('編集案を適用しました。Undo で戻せます'); setError(''); setRetry(null);
+      editor.notify(automatic ? 'Codex の編集案を即適用しました。Undo で戻せます' : '編集案を適用しました。Undo で戻せます'); setError(''); setRetry(null);
     } catch (failure) { setError(failure instanceof Error ? failure.message : '適用できませんでした。'); }
   }
+  // send() awaits the network; apply through the latest render so its scene and chat are current.
+  const applyRef = useRef(apply); applyRef.current = apply;
   function showTarget(target: ProposalTarget) {
     const exists = target.selection.kind === 'composition' ? editor.scene.compositions[target.selection.id] : editor.scene.transitions[target.selection.id];
     if (!exists) { setError('編集案の対象が削除されています。今の状態でもう一度依頼してください。'); return; }
@@ -176,7 +181,7 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
         {message.proposal && message.proposal.changes.length > 0 && <div className="proposal-card">
           <span>{message.proposal.count} 件の編集</span>
           {message.applied ? <span className="applied"><Check size={13}/>Applied</span> : message.dismissed ? <span className="muted">Discarded</span> : !own ? <span className="muted">依頼した人が適用できます</span> : message.scope.sceneId !== editor.scene.id ? <span className="muted">対象の Scene で適用できます</span> : <div>
-            <button className="primary-button small-button" disabled={editor.viewingPlayback} onClick={() => apply(message)}>Apply edits</button>
+            <button className="primary-button small-button" disabled={editor.viewingPlayback} onClick={() => apply(message.id)}>Apply edits</button>
             <button className="icon-button" aria-label="編集案を破棄" onClick={() => chat.patch(message.id, { dismissed: true })}><X size={13}/></button>
           </div>}
           <div className="proposal-targets" aria-label="編集する対象">{targets.map(target => {
@@ -193,9 +198,9 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
       {editor.viewingPlayback && <p className="assistant-connection">AI への依頼・適用は編集画面で。<button className="text-button" onClick={onEditMoment}>この場面を編集</button></p>}
       {available === false && !error && <p className="assistant-connection">Codex の接続待ち · メンバーとは会話できます</p>}
       <form onSubmit={event => { event.preventDefault(); void send(); }}>
-        <textarea ref={composer} aria-label="チャットメッセージ" placeholder="メンバーに送信、@codex で AI に依頼" value={prompt} onChange={event => updatePrompt(event.target.value)} maxLength={3000} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} rows={3}/>
+        <textarea ref={composer} aria-label="チャットメッセージ" placeholder="メンバーに送信、@codex で AI に依頼" value={prompt} onChange={event => updatePrompt(event.target.value)} maxLength={3000} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(prompt, undefined, event.metaKey || event.ctrlKey); } }} rows={3}/>
         <div className="composer-bottom"><button className="mention-button" type="button" onClick={() => { updatePrompt(addressingCodex ? prompt : `@codex ${prompt}`); composer.current?.focus(); }}>@codex</button><span>{addressingCodex ? editor.scene.name : 'Everyone'}</span><button className="send-button" aria-label="送信" disabled={!prompt.trim() || addressingCodex && (!!pending || available !== true || editor.viewingPlayback)} type="submit"><ArrowUp size={17}/></button></div>
-      </form><small>Enter で送信 · Shift + Enter で改行</small>
+      </form><small>Enter で送信 · Shift + Enter で改行 · ⌘/Ctrl + Enter で @codex の編集案を即適用</small>
     </div>
   </div>;
 }

@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { zodTextFormat } from 'openai/helpers/zod';
 import * as Y from 'yjs';
 import { z } from 'zod';
-import { compileProposal, EditProposalSchema } from '../shared/ai';
+import { compileProposal, EditProposalSchema, type EditProposal } from '../shared/ai';
 import { AiHistorySchema } from '../shared/ai-conversation';
 import { readProject } from '../shared/document';
 
@@ -33,8 +33,22 @@ setTransitionDuration changes an existing Transition's duration in milliseconds 
 Image objects contain an uploaded raster asset shared across their compositions. You may change their position, dimensions, rotation, opacity, visibility, corner radius, border or effect, and animate them with Move/Fade/Grow/Write. Write reveals an image left-to-right. Preserve aspect ratio when resizing unless stretching is explicitly requested. Never change image fill, text or fontSize, which cannot alter bitmap pixels. Creating/replacing image assets and editing their pixels are unavailable; ask the user to use Add image for uploads. For TeX use standard base and ams commands. Do not generate source code or whole videos.
 Mention the concrete changes briefly. If a request cannot be expressed with these operations, explain and return no operations.`;
 
+// One Responses call, retried once by the SDK on transient failures, then at most one
+// validation repair: the whole request stays inside the room's AI lock.
+const CALL_TIMEOUT_MS = 60_000;
+const REPAIR_BUDGET_MS = 50_000;
+type ProposalOutput = z.infer<typeof EditProposalSchema>;
+type InputMessage = { role: 'developer' | 'user' | 'assistant'; content: string };
+
+/** A model-readable reason; Zod issues name the offending field instead of the generic user message. */
+function rejectionReason(error: unknown): string {
+  if (error instanceof z.ZodError) return error.issues.map(issue => `${issue.path.join('.') || 'proposal'}: ${issue.message}`).join('; ');
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: string, model: string) {
   input = AiRequestSchema.parse(input);
+  const started = Date.now();
   // Keep preconditions from the instant the request starts, even if people edit while AI runs.
   const snapshot = new Y.Doc();
   Y.applyUpdate(snapshot, Y.encodeStateAsUpdate(doc));
@@ -51,20 +65,49 @@ export async function createEditProposal(doc: Y.Doc, input: AiRequest, apiKey: s
       scene,
     });
     if (content.length > 200000) throw new Error('この Scene は大きすぎます。Scene を分けてからお試しください。');
-    const client = new OpenAI({ apiKey, timeout: 90000, maxRetries: 0 });
-    const history = (input.history ?? []).map(turn => ({
+    const client = new OpenAI({ apiKey, timeout: CALL_TIMEOUT_MS, maxRetries: 1 });
+    const history: InputMessage[] = (input.history ?? []).map(turn => ({
       role: turn.role,
       content: turn.role === 'assistant' ? JSON.stringify({ message: turn.content, proposalStatus: turn.proposalStatus ?? null }) : turn.content,
     }));
-    const result = await client.responses.parse({
-      model, store: false, max_output_tokens: 6000,
-      input: [{ role: 'developer', content: instructions + (input.supportsCompositionAppends ? '' : '\nThis client cannot apply appendComposition. Do not use appendComposition for this request. If adding a Composition is necessary, ask the user to reload the page to use the updated editor, and return no operations. Existing-object and existing-timeline editing remains available.') }, ...history, { role: 'user', content }],
-      text: { format: zodTextFormat(EditProposalSchema, 'poietra_edit') },
-    });
-    if (result.status === 'incomplete') throw new Error('編集案をまとめきれませんでした。依頼を小さく分けてお試しください。');
-    if (!result.output_parsed) throw new Error('この依頼の編集案を作れませんでした。依頼を言い換えてお試しください。');
-    if (!input.supportsCompositionAppends && result.output_parsed.operations.some(operation => operation.action === 'appendComposition')) throw new Error('場面の追加を使うには、ページを再読み込みしてから依頼してください。');
-    return compileProposal(snapshot, project, input.sceneId, result.output_parsed, { selectedIds: input.selectedIds, compositionId: input.compositionId, transitionId: input.transitionId });
+    const messages: InputMessage[] = [{ role: 'developer', content: instructions + (input.supportsCompositionAppends ? '' : '\nThis client cannot apply appendComposition. Do not use appendComposition for this request. If adding a Composition is necessary, ask the user to reload the page to use the updated editor, and return no operations. Existing-object and existing-timeline editing remains available.') }, ...history, { role: 'user', content }];
+    const usage = { input: 0, cached: 0, output: 0 };
+    let attempts = 0;
+    async function generate(extra: InputMessage[]): Promise<ProposalOutput> {
+      attempts += 1;
+      const result = await client.responses.parse({
+        model, store: false, max_output_tokens: 6000,
+        input: [...messages, ...extra],
+        text: { format: zodTextFormat(EditProposalSchema, 'poietra_edit') },
+      });
+      usage.input += result.usage?.input_tokens ?? 0;
+      usage.cached += result.usage?.input_tokens_details?.cached_tokens ?? 0;
+      usage.output += result.usage?.output_tokens ?? 0;
+      if (result.status === 'incomplete') throw new Error('編集案をまとめきれませんでした。依頼を小さく分けてお試しください。');
+      if (!result.output_parsed) throw new Error('この依頼の編集案を作れませんでした。依頼を言い換えてお試しください。');
+      return result.output_parsed;
+    }
+    const compile = (parsed: ProposalOutput) => {
+      if (!input.supportsCompositionAppends && parsed.operations.some(operation => operation.action === 'appendComposition')) throw new Error('場面の追加を使うには、ページを再読み込みしてから依頼してください。');
+      return compileProposal(snapshot, project, input.sceneId, parsed, { selectedIds: input.selectedIds, compositionId: input.compositionId, transitionId: input.transitionId });
+    };
+    let parsed = await generate([]);
+    let proposal: EditProposal;
+    try { proposal = compile(parsed); }
+    catch (error) {
+      // The model sees its own rejected output and the exact reason, once. API failures,
+      // truncated output and refusals are thrown by generate() and are never replayed.
+      const reason = rejectionReason(error);
+      if (Date.now() - started > REPAIR_BUDGET_MS) throw error;
+      console.warn(JSON.stringify({ event: 'ai_proposal_rejected', ms: Date.now() - started, reason }));
+      parsed = await generate([
+        { role: 'assistant', content: JSON.stringify(parsed) },
+        { role: 'user', content: `The previous proposal was rejected before it reached the editor. Validation error: ${reason}\nReturn a corrected proposal for the same request. Use only object, composition and transition IDs that exist in the current Scene, or refs declared in this proposal; keep every track within its Transition duration; never edit locked objects. If the request cannot be satisfied with the available operations, explain why and return no operations.` },
+      ]);
+      proposal = compile(parsed);
+    }
+    console.log(JSON.stringify({ event: 'ai_proposal', ms: Date.now() - started, attempts, operations: parsed.operations.length, changes: proposal.changes.length, usage }));
+    return proposal;
   } finally { snapshot.destroy(); }
 }
 
