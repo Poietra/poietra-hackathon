@@ -13,6 +13,22 @@ const input: AiRequest = { roomId: 'ai-unit-test-room', sceneId: 'scene-1', comp
 beforeEach(() => { doc = new Y.Doc(); initializeDocument(doc, makeDemoProject()); parse.mockReset(); });
 afterEach(() => doc.destroy());
 
+test.each([false, true])('composition append requires an explicitly capable client (%s)', async supported => {
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '次の場面を追加します。', operations: [
+    { action: 'appendComposition', ref: '@next', transitionRef: '@travel', name: 'Next', duration: 1000, transitionDuration: 800 },
+    { action: 'setState', compositionId: '@next', objectId: 'circle', property: 'x', value: 1000 },
+  ] } });
+  const pending = createEditProposal(doc, { ...input, supportsCompositionAppends: supported }, 'test-key-never-sent', 'test-model');
+  if (supported) {
+    const result = await pending; expect(result.compositionAppends?.[0].compositionIds).toHaveLength(1);
+    expect(() => validateProposalForApply(doc, result)).not.toThrow();
+    expect(parse.mock.calls[0][0].input[0].content).not.toContain('This client cannot apply');
+  } else {
+    await expect(pending).rejects.toThrow('ページを再読み込み');
+    expect(parse.mock.calls[0][0].input[0].content).toContain('This client cannot apply appendComposition');
+  }
+});
+
 test('Responses structured output uses the start snapshot and produces guarded edits', async () => {
   let finish!: (value: unknown) => void;
   parse.mockReturnValue(new Promise(resolve => { finish = resolve; }));
@@ -153,5 +169,5 @@ test('Responses can create and animate a new object with a longer Transition in 
   expect(JSON.stringify(body.text.format.schema)).toContain('createObject');
   expect(JSON.stringify(body.text.format.schema)).toContain('setTransitionDuration');
   expect(body.input[0].content).toContain('never rescales or clamps other tracks');
-  expect(body.input[0].content).toContain('Composition/Transition creation is unavailable');
+  expect(body.input[0].content).toContain('appendComposition adds a new Composition at the end');
 });

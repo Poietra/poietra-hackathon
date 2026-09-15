@@ -141,7 +141,7 @@ describe('Undo of newly shared objects', () => {
     expect(f.scene().transitions['transition-1'].tracks.created).toBeUndefined(); f.valid();
   });
 
-  test('keeps whole Scene and Composition creation Undo semantics outside this object-creation rule', () => {
+  test('keeps whole Scene creation semantics and retains a peer-edited new Composition', () => {
     const f = fixture();
     const sceneId = duplicateScene(f.alice, 'scene-1'); f.manager.stopCapturing(); f.sync();
     const scene = readProject(f.bob)!.scenes[sceneId], objectId = Object.keys(scene.objects)[0];
@@ -149,7 +149,9 @@ describe('Undo of newly shared objects', () => {
     expect(f.undo()).toEqual({ tracks: 0, objects: 0 }); expect(readProject(f.alice)!.scenes[sceneId]).toBeUndefined(); f.valid();
     const compositionId = duplicateComposition(f.alice, 'scene-1', 'comp-1'); f.manager.stopCapturing(); f.sync();
     f.peer([{ path: [...statePath('circle', compositionId), 'fill'], value: '#ff0000' }]);
-    expect(f.undo()).toEqual({ tracks: 0, objects: 0 }); expect(f.scene().compositions[compositionId]).toBeUndefined(); f.valid();
+    expect(f.undo()).toEqual({ tracks: 0, objects: 0 });
+    expect(f.scene().compositions[compositionId].states.circle.fill).toBe('#ff0000');
+    expect(f.manager.lastUndoPreservedCompositions).toBe(1); f.valid();
   });
 
   test.each([400, 1200])('only retains a Transition extension when the shared creation needs it (%i ms)', duration => {

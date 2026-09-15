@@ -61,7 +61,8 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   function notify(message: string) { if (toastTimer.current) clearTimeout(toastTimer.current); setToast(message); toastTimer.current = setTimeout(() => setToast(''), 4000); }
   function undo() {
     const retained = store.undo(), objects = store.lastUndoPreservedObjects;
-    if (objects > 0) notify(`共同編集者が変更した ${objects} 個の新規オブジェクトと、その状態・アニメーションを保持しました。`);
+    if (store.lastUndoPreservedCompositions > 0) notify(`共同編集者が使っている ${store.lastUndoPreservedCompositions} 個の新しい場面と、そのオブジェクト・動きを保持しました。`);
+    else if (objects > 0) notify(`共同編集者が変更した ${objects} 個の新規オブジェクトと、その状態・アニメーションを保持しました。`);
     else if (retained > 0) notify(`共同編集者が変更した ${retained} 個の新規アニメーションを保持しました。`);
     else if (store.lastUndoPreservedDurations > 0) notify('共同編集者のアニメーションが収まるように、Transition の長さを保持しました。');
   }
