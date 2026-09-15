@@ -11,6 +11,7 @@ import { OBJECT_REGION_PADDING, readPixels as pixels, readPixel as pixel, compar
 
 const DISPLAY = { millisecondsPerSecond: 1000, fractionalDigits: 3, sceneDurationDigits: 1, objectUrlReleaseMs: 1000, progressPercent: 100 };
 const HALO_SAMPLE = { outsideOffset: 2, width: 12, height: 16 };
+const VIDEO_WRITE_SAMPLES = [0.25, 0.5, 0.75];
 
 const probe = installEffectsProbe(new URLSearchParams(location.search).get('backend') === 'canvas2d');
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -88,7 +89,8 @@ async function inspectExport(blob: Blob, enabled: boolean, signal: AbortSignal) 
     for await (const packet of new EncodedPacketSink(track).packets()) timestamps.push(packet.timestamp);
     const sink = new VideoSampleSink(track);
     const comparisons = [];
-    for (const time of [times.start, times.writeMiddle, times.settled]) {
+    const writeTimes = VIDEO_WRITE_SAMPLES.map(progress => times.writeStart + (times.writeEnd - times.writeStart) * progress);
+    for (const time of [times.start, ...writeTimes, times.settled]) {
       signal.throwIfAborted();
       const sample = await sink.getSample(time / DISPLAY.millisecondsPerSecond);
       if (!sample) throw new Error('保存したフレームを読み込めませんでした。');
@@ -96,11 +98,13 @@ async function inspectExport(blob: Blob, enabled: boolean, signal: AbortSignal) 
       const frame = await renderAt(time, enabled);
       signal.throwIfAborted();
       const expected = pixels(preview); const actual = pixels(decoded);
+      const equationArea = itemRegion(frame, 'equation');
+      const equationPixels = (target: HTMLCanvasElement) => target.getContext('2d')!.getImageData(equationArea.x, equationArea.y, equationArea.width, equationArea.height);
       comparisons.push({
         timeMs: time, ...difference(expected, actual),
         halo: { expected: region(expected, circleHaloRegion(frame)), actual: region(actual, circleHaloRegion(frame)) },
         japanese: { expected: region(expected, itemRegion(frame, 'japanese')), actual: region(actual, itemRegion(frame, 'japanese')) },
-        ...(time >= times.settled ? { equation: { expected: region(expected, itemRegion(frame, 'equation')), actual: region(actual, itemRegion(frame, 'equation')) } } : {}),
+        ...(time > times.writeStart ? { equation: { expected: region(expected, equationArea), actual: region(actual, equationArea), error: difference(equationPixels(preview), equationPixels(decoded)) } } : {}),
       });
     }
     return { width: track.displayWidth, height: track.displayHeight, duration: await input.computeDuration(), packetCount: timestamps.length, timestamps, comparisons };
