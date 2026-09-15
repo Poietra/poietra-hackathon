@@ -11,7 +11,7 @@ export function escapeXml(value: string): string {
 
 export function finite(value: number, fallback = 0): number { return Number.isFinite(value) ? value : fallback; }
 export function unit(value: number): number { return Math.min(1, Math.max(0, finite(value))); }
-export function number(value: number): string { return String(Math.round(finite(value) * 1000000) / 1000000); }
+export function number(value: number): string { const safe = finite(value); return String(Math.abs(safe) < 1e15 ? Math.round(safe * 1000000) / 1000000 : safe); }
 
 /** Encodes every code point, so different authored prefixes can never collapse to one ID. */
 export function safeId(value: string): string { return Array.from(value, character => character.codePointAt(0)!.toString(16)).join('-') || 'empty'; }

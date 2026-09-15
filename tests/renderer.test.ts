@@ -43,6 +43,9 @@ describe('SVG renderer', () => {
     expect(result).not.toContain('stroke="red"');
     expect(result).toContain('&lt;script&gt;');
     expect(result).toContain('fill="none"');
+    const invalidXml = svg(item('text', { text: 'A\u0000\u0001\uFFFE\uD800B😀' }));
+    expect(invalidXml).toContain('A\uFFFDB😀');
+    expect(invalidXml).not.toMatch(/[\u0000\u0001\uFFFE]/);
   });
 
   it('keeps background optional and avoids ID collisions between SVGs', () => {
@@ -81,5 +84,10 @@ describe('SVG renderer', () => {
     expect(result).not.toContain('<a');
     expect(result).not.toContain('href=');
     expect(result).not.toContain('<script>');
+    scene.compositions['comp-2'].states.equation.text = 'x+\\text{日本語}';
+    await prepareScene(scene);
+    const japanese = compositionFrame(scene, scene.compositions['comp-2']).objects.find(value => value.object.kind === 'equation')!;
+    expect(svg(japanese)).toContain('日本語');
+    expect(svg(japanese)).toContain('<text');
   });
 });

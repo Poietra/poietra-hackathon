@@ -32,7 +32,7 @@ async function converter() {
       const read = (element: typeof container): MathNode | null => {
         const tag = adaptor.kind(element);
         // Do not serialize MathJax HTML, links, foreign objects, styles, or error text.
-        if (adaptor.getAttribute(element, 'data-mml-node') === 'merror') invalid = true;
+        if (tag === 'text' || adaptor.getAttribute(element, 'data-mml-node') === 'merror') invalid = true;
         if (!tags.has(tag)) return null;
         const attributes: Record<string, string> = {};
         for (const { name, value } of adaptor.allAttributes(element)) {

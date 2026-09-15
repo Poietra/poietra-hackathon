@@ -2,6 +2,7 @@ import type { Scene } from '../../shared/model';
 import type { Frame, RenderObject } from './evaluate';
 import type { ObjectBounds, SvgOptions } from './render-contract';
 import { equationMarkup, getEquation, prepareEquations } from './rendering/equations';
+import { embeddedFontStyles, FONT_FAMILY, measureText, prepareFonts } from './rendering/fonts';
 import { color, escapeXml, finite, number as n, safeId, unit } from './rendering/svg';
 
 let nextSvg = 0;
@@ -12,6 +13,10 @@ export async function prepareScene(scene: Scene): Promise<void> {
   await prepareEquations(Object.values(scene.compositions).flatMap(composition => equations.flatMap(object => {
     const state = composition.states[object.id];
     return state ? [state.text] : [];
+  })));
+  await prepareFonts(Object.values(scene.compositions).flatMap(composition => Object.values(scene.objects).flatMap(object => {
+    const state = composition.states[object.id];
+    return state && (object.kind === 'text' || (object.kind === 'equation' && !getEquation(state.text))) ? [state.text] : [];
   })));
 }
 
@@ -40,10 +45,7 @@ function textSize(item: RenderObject): { width: number; height: number } {
   const size = Math.max(0, finite(item.state.fontSize));
   const equation = item.object.kind === 'equation' && getEquation(item.state.text);
   if (equation) return { width: equation.width * size / 1000, height: equation.height * size / 1000 };
-  const lines = item.state.text.split('\n');
-  // A deterministic, conservative fallback is also available in headless environments.
-  const width = Math.max(0, ...lines.map(line => Array.from(line).reduce((sum, character) => sum + (character.codePointAt(0)! > 255 ? 1 : 0.62), 0))) * size;
-  return { width, height: size * (1 + (lines.length - 1) * 1.25) };
+  return measureText(item.state.text, size);
 }
 
 /** Unrotated visual bounds; path controls are relative to the start anchor. */
@@ -75,16 +77,17 @@ export function objectBounds(item: RenderObject): ObjectBounds {
 function textMarkup(item: RenderObject, prefix: string): string {
   const s = item.state, size = Math.max(0, finite(s.fontSize)), progress = unit(item.writeProgress);
   const lines = s.text.split('\n');
+  const metrics = measureText(s.text, size);
   const glyphCount = Array.from(s.text.replaceAll('\n', '')).length;
   let index = 0;
   const body = lines.map((line, lineIndex) => {
     const text = item.order === 'sequential' && progress < 1
       ? Array.from(line).map(character => `<tspan opacity="${n(unit(progress * glyphCount - index++))}">${escapeXml(character)}</tspan>`).join('') : escapeXml(line);
-    return `<text x="0" y="${n((lineIndex - (lines.length - 1) / 2) * size * 1.25)}" text-anchor="middle" dominant-baseline="central">${text}</text>`;
+    return `<text x="0" y="${n((lineIndex - (lines.length - 1) / 2) * metrics.lineHeight + metrics.baseline)}" text-anchor="middle" xml:space="preserve">${text}</text>`;
   }).join('');
-  if (item.order === 'sequential' || progress >= 1) return `<g font-family="Inter, 'Noto Sans JP', sans-serif" font-size="${n(size)}">${body}</g>`;
+  if (item.order === 'sequential' || progress >= 1) return `<g font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
   const bounds = textSize(item);
-  return `<defs><clipPath id="${prefix}-text"><rect x="${n(-bounds.width / 2)}" y="${n(-bounds.height / 2 - size * 0.2)}" width="${n(bounds.width * progress)}" height="${n(bounds.height + size * 0.4)}"/></clipPath></defs><g clip-path="url(#${prefix}-text)" font-family="Inter, 'Noto Sans JP', sans-serif" font-size="${n(size)}">${body}</g>`;
+  return `<defs><clipPath id="${prefix}-text"><rect x="${n(-bounds.width / 2)}" y="${n(-bounds.height / 2 - size * 0.2)}" width="${n(bounds.width * progress)}" height="${n(bounds.height + size * 0.4)}"/></clipPath></defs><g clip-path="url(#${prefix}-text)" font-family="${escapeXml(FONT_FAMILY)}" font-size="${n(size)}">${body}</g>`;
 }
 
 function shapeMarkup(item: RenderObject, prefix: string): string {
@@ -116,8 +119,10 @@ export function frameToSvg(frame: Frame, options: SvgOptions = {}): string {
   const objects = frame.objects.map((item, index) => {
     if (!item.state.visible || unit(item.state.opacity) === 0 || unit(item.writeProgress) === 0) return '';
     const s = item.state, id = `${prefix}-${index}`, glow = s.effect === 'glow';
-    const filter = glow ? `<defs><filter id="${id}-glow" x="-100%" y="-100%" width="300%" height="300%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="4"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>` : '';
+    const bounds = glow ? objectBounds(item) : null;
+    const filter = glow ? `<defs><filter id="${id}-glow" filterUnits="userSpaceOnUse" x="${n(bounds!.x - s.x - 16)}" y="${n(bounds!.y - s.y - 16)}" width="${n(bounds!.width + 32)}" height="${n(bounds!.height + 32)}" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="4"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>` : '';
     return `${filter}<g data-object-id="${escapeXml(item.object.id)}" transform="translate(${n(s.x)} ${n(s.y)}) rotate(${n(s.rotation)})" opacity="${n(unit(s.opacity))}" fill="${escapeXml(color(s.fill))}" color="${escapeXml(color(s.fill, '#d7d8e4'))}" stroke="${escapeXml(color(s.stroke))}" stroke-width="${n(Math.max(0, finite(s.strokeWidth)))}" stroke-linecap="round" stroke-linejoin="round"${glow ? ` filter="url(#${id}-glow)"` : ''}>${shapeMarkup(item, id)}</g>`;
   }).join('');
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(width)}" height="${n(height)}" viewBox="0 0 ${n(width)} ${n(height)}">${options.background === false ? '' : `<rect width="${n(width)}" height="${n(height)}" fill="${escapeXml(color(frame.background, '#08090b'))}"/>`}${objects}</svg>`;
+  const fontStyles = embeddedFontStyles(frame.objects.filter(item => item.object.kind === 'text' || (item.object.kind === 'equation' && !getEquation(item.state.text))).map(item => item.state.text));
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(width)}" height="${n(height)}" viewBox="0 0 ${n(width)} ${n(height)}">${fontStyles}${options.background === false ? '' : `<rect width="${n(width)}" height="${n(height)}" fill="${escapeXml(color(frame.background, '#08090b'))}"/>`}${objects}</svg>`;
 }
