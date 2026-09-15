@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Tooltip } from '@base-ui/react/tooltip';
-import { ArrowRight, BookOpen, ChartNoAxesColumnIncreasing, Check, ChevronDown, Circle, Copy, Download, Film, LoaderCircle, MousePointer2, Pause, Play, Plus, Redo2, Send, Share2, Sigma, SlidersHorizontal, MessageCircle, Spline, Square, Type, Undo2, X, ArrowUpRight, Minus, Keyboard, Link2 } from 'lucide-react';
+import { ArrowRight, BookOpen, ChartNoAxesColumnIncreasing, Check, ChevronDown, Circle, Copy, Download, Film, LoaderCircle, MousePointer2, Pause, Play, Plus, Redo2, Send, Share2, Sigma, SlidersHorizontal, MessageCircle, ImagePlus, Spline, Square, Type, Undo2, X, ArrowUpRight, Minus, Keyboard, Link2 } from 'lucide-react';
 import { EditorContext, type Tool } from './editor/context';
 import { EditorStore } from './editor/store';
 import { compositionFrame, evaluateScene, transitionFrame } from './engine/evaluate';
@@ -17,6 +17,9 @@ import { ProjectDialog } from './ui/ProjectDialog';
 import { PlaybackPanel } from './ui/PlaybackPanel';
 import { ExportDialog } from './ui/ExportDialog';
 import { ProjectPreview } from './ui/ProjectPreview';
+import { IMAGE_ACCEPT, normalizeImage, uploadImage, portableProject, rehostImageAssets } from './editor/images';
+import { LOCAL_ORIGIN } from '../shared/document';
+import { PROJECT_FILE_LIMIT } from '../shared/project-file';
 import { SceneTabs } from './ui/SceneTabs';
 import { ConnectionStatus } from './ui/ConnectionStatus';
 import { IconButton, Modal } from './ui/components';
@@ -24,6 +27,11 @@ import { download } from './ui/utils';
 import { copyObjects, parseObjects, serializeObjects, OBJECT_CLIPBOARD_MIME } from '../shared/clipboard';
 
 export function App({ store, kernel, renderer, exporter, createFramePainter }: { store: EditorStore; kernel: MotionKernel; renderer: RendererContract; exporter: ExporterContract | null; createFramePainter?: PainterContract['createFramePainter'] }) {
+  const imageInput = useRef<HTMLInputElement>(null);
+  const imageRequest = useRef<{ controller: AbortController; sceneId: string; compositionId: string } | null>(null);
+  const [importingImage, setImportingImage] = useState(false);
+  const [imageDrag, setImageDrag] = useState(false);
+  const [savingProject, setSavingProject] = useState(false);
   const snapshot = useSyncExternalStore(store.subscribe, store.snapshot);
   const chatMessages = useSyncExternalStore(store.chat.subscribe, store.chat.snapshot);
   const [lastReadChatId, setLastReadChatId] = useState<string | undefined>();
@@ -75,6 +83,50 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
     catch (error) { notify(error instanceof Error ? error.message : '現在のアニメーションと競合するため、やり直せませんでした。'); }
   }
   function select(next: Selection) { setPlaying(false); setTransportView(false); setTransitionSeeking(false); setRequestedSelection(next); setPathEditing(false); setPlayhead(scene ? sceneSegments(store.scene(scene.id)).find(part => part.id === next.id)?.start || 0 : 0); }
+  async function importImages(files: File[], point?: { x: number; y: number }) {
+    if (!scene || !files.length || imageRequest.current) return;
+    if (transportView || playing) { notify('編集する場面を開いてから画像を追加してください。'); return; }
+    if (files.length > 8) { notify('画像は一度に8枚まで追加できます。'); return; }
+    const target = { sceneId: scene.id, compositionId, controller: new AbortController() };
+    imageRequest.current = target; setImportingImage(true);
+    try {
+      const prepared: { file: File; image: Awaited<ReturnType<typeof normalizeImage>>; src: string }[] = [];
+      for (const file of files) {
+        const image = await normalizeImage(file); target.controller.signal.throwIfAborted();
+        const src = await uploadImage(store.roomId, image.blob, target.controller.signal);
+        prepared.push({ file, image, src });
+      }
+      target.controller.signal.throwIfAborted();
+      const current = store.scene(target.sceneId);
+      if (!current.compositions[target.compositionId]) throw new Error('追加先の場面が削除されました。もう一度選び直してください。');
+      const ids: string[] = [];
+      store.undoManager.stopCapturing();
+      try { store.doc.transact(() => {
+        for (const [index, { file, image, src }] of prepared.entries()) {
+          const scale = Math.min(1, current.width * 0.65 / image.width, current.height * 0.65 / image.height);
+          ids.push(store.addObject(target.sceneId, target.compositionId, 'image', { x: (point?.x ?? current.width / 2) + index * 24, y: (point?.y ?? current.height / 2) + index * 24, width: image.width * scale, height: image.height * scale, cornerRadius: 0, fill: 'none', stroke: '#ffffff', strokeWidth: 0 }, { src, width: image.width, height: image.height }, file.name.replace(/\.[^.]+$/, '') || 'Image'));
+        }
+      }, LOCAL_ORIGIN); } finally { store.undoManager.stopCapturing(); }
+      select({ kind: 'composition', id: target.compositionId }); setSelectedIds(ids); setTool('select'); setRightTab('properties');
+      notify(`${ids.length} 枚の画像を追加しました`);
+    } catch (error) { if (!target.controller.signal.aborted) notify(error instanceof Error ? error.message : '画像を追加できませんでした。'); }
+    finally { if (imageRequest.current === target) { imageRequest.current = null; setImportingImage(false); } }
+  }
+  useEffect(() => {
+    const request = imageRequest.current;
+    if (request && (request.sceneId !== scene?.id || request.compositionId !== compositionId)) request.controller.abort();
+  }, [scene?.id, compositionId]);
+  useEffect(() => () => imageRequest.current?.controller.abort(), []);
+  async function saveProject() {
+    if (!project || savingProject) return;
+    setSavingProject(true);
+    try {
+      const snapshot = await portableProject(project), blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+      if (blob.size > PROJECT_FILE_LIMIT) throw new Error('保存する画像や Scene を減らして、32 MB 以下にしてください。');
+      download(blob, `${snapshot.name.replace(/[\\/:*?"<>|]/g, '_')}.poietra.json`);
+    } catch (error) { notify(error instanceof Error ? error.message : 'プロジェクトを保存できませんでした。'); }
+    finally { setSavingProject(false); }
+  }
   function appendComposition() {
     if (!scene) return;
     const current = store.scene(scene.id);
@@ -224,8 +276,10 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
         notify(`${data.objects.length} 個のオブジェクトを${event.type === 'cut' ? '切り取りました' : 'コピーしました'}`);
       } catch (error) { event.preventDefault(); notify(error instanceof Error ? error.message : 'コピーできませんでした'); }
     }
-    function paste(event: ClipboardEvent) {
+    async function paste(event: ClipboardEvent) {
       if (!scene || composing.current || textTarget(event.target) || window.getSelection()?.toString() || !event.clipboardData) return;
+      const imageFiles = [...event.clipboardData.files].filter(file => file.type.startsWith('image/'));
+      if (imageFiles.length) { event.preventDefault(); void importImages(imageFiles); return; }
       const text = event.clipboardData.getData(OBJECT_CLIPBOARD_MIME) || event.clipboardData.getData('text/plain');
       const inPlace = pasteInPlace.current; pasteInPlace.current = false;
       try {
@@ -233,6 +287,16 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
         if (!data) return;
         event.preventDefault();
         if (transportView) { notify('編集する場面を開いてから貼り付けてください。'); return; }
+        if (data.objects.some(object => object.image)) {
+          if (imageRequest.current) { notify('画像の保存が終わってから貼り付けてください。'); return; }
+          const request = { sceneId: scene.id, compositionId, controller: new AbortController() };
+          imageRequest.current = request; setImportingImage(true);
+          try {
+            await rehostImageAssets(data.objects, store.roomId, request.controller.signal);
+            request.controller.signal.throwIfAborted();
+          } catch (error) { if (request.controller.signal.aborted) return; throw error; }
+          finally { if (imageRequest.current === request) { imageRequest.current = null; setImportingImage(false); } }
+        }
         const target = `${scene.id}/${compositionId}`;
         const count = lastPaste.current.text === text && lastPaste.current.target === target ? lastPaste.current.count + 1 : 1;
         const ids = store.paste(scene.id, compositionId, data, inPlace ? 0 : count * 24);
@@ -260,14 +324,21 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
     <div className="project-heading"><button className="project-icon" aria-label="プロジェクトを開く" onClick={() => setProjectOpen(true)}>P</button><input aria-label="Project name" value={project.name} onChange={e => store.setProjectName(e.target.value)}/></div>
     <header className="topbar"><SceneTabs project={project} sceneId={scene.id} onChange={changeScene} onNew={newScene} store={store} notify={notify}/><div className="topbar-spacer"/><div className="history-actions"><IconButton label="元に戻す (⌘Z)" disabled={!snapshot.canUndo} onClick={undo}><Undo2 size={15}/></IconButton><IconButton label="やり直す (⌘⇧Z)" disabled={!snapshot.canRedo} onClick={redo}><Redo2 size={15}/></IconButton></div><ConnectionStatus snapshot={snapshot} onRetry={store.retryConnection}/><div className="participant-stack">{participants.slice(0,4).map(peer => <button className="avatar" key={peer.clientId} style={{ background: peer.color }} title={`${peer.name}${peer.clientId === store.doc.clientID ? '（あなた）' : ''}`} onClick={() => setShareOpen(true)}>{peer.name.startsWith('Guest ') ? peer.name.slice(-2) : peer.name.slice(0,2).toUpperCase()}</button>)}</div><button className="subtle-button share-button" onClick={() => setShareOpen(true)}><Share2 size={14}/><span>Share</span></button><button className="subtle-button" aria-label="Preview project" onClick={() => { setPlaying(false); setProjectPreviewOpen(true); }}><Play size={14}/><span>Preview</span></button><button className="primary-button export-button" onClick={() => setExportOpen(true)} disabled={!exporter}><Film size={14}/><span>Export</span></button></header>
     <Sidebar onNewScene={newScene}/>
-    <main className="editor-main"><div className={`workspace ${transition && !viewingPlayback ? 'transition-workspace' : ''}`}>
-      <div className="workspace-heading"><div className="workspace-breadcrumb">{transition && !viewingPlayback ? <><span>{scene.compositions[transition.fromId]?.name}</span><ArrowRight size={17}/><span>{scene.compositions[transition.toId]?.name}</span></> : <><span>{viewingPlayback ? scene.name : scene.compositions[compositionId]?.name}</span><span className="muted workspace-subtitle">{viewingPlayback ? 'Preview' : 'Composition'}</span></>}</div>{transition && !viewingPlayback ? <button className={`subtle-button preview-button ${playing ? 'active' : ''}`} onClick={() => play('transition')}>{playing ? <Pause size={13} fill="currentColor"/> : <Play size={13} fill="currentColor"/>}Preview</button> : <span className="workspace-dimensions">{scene.width} × {scene.height}</span>}</div>
+    <main className={`editor-main${imageDrag ? ' image-drop-active' : ''}`} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setImageDrag(true); } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setImageDrag(false); }} onDrop={event => {
+      if (!event.dataTransfer.files.length) return; event.preventDefault(); setImageDrag(false);
+      const surface = (event.target as Element).closest<HTMLElement>('.stage-surface');
+      if (surface?.dataset.testid === 'stage-from') { notify('右側の場面に画像をドロップしてください。'); return; }
+      const rect = surface?.getBoundingClientRect();
+      const point = rect ? { x: (event.clientX - rect.left) / rect.width * scene.width, y: (event.clientY - rect.top) / rect.height * scene.height } : undefined;
+      void importImages([...event.dataTransfer.files], point);
+    }}><input ref={imageInput} type="file" aria-label="画像ファイル" accept={IMAGE_ACCEPT} multiple hidden onChange={event => { const files = [...(event.currentTarget.files || [])]; event.currentTarget.value = ''; void importImages(files); }}/><div className={`workspace ${transition && !viewingPlayback ? 'transition-workspace' : ''}`}>
+      <div className="workspace-heading"><div className="workspace-breadcrumb">{transition && !viewingPlayback ? <><span>{scene.compositions[transition.fromId]?.name}</span><ArrowRight size={17}/><span>{scene.compositions[transition.toId]?.name}</span></> : <><span>{viewingPlayback ? scene.name : scene.compositions[compositionId]?.name}</span><span className="muted workspace-subtitle">{viewingPlayback ? 'Preview' : 'Composition'}</span></>}</div><button className="subtle-button image-add-button" disabled={importingImage || viewingPlayback || playing} onClick={() => imageInput.current?.click()}><ImagePlus size={14}/>{importingImage ? 'Uploading…' : 'Add image'}</button>{transition && !viewingPlayback ? <button className={`subtle-button preview-button ${playing ? 'active' : ''}`} onClick={() => play('transition')}>{playing ? <Pause size={13} fill="currentColor"/> : <Play size={13} fill="currentColor"/>}Preview</button> : <span className="workspace-dimensions">{scene.width} × {scene.height}</span>}</div>
       {renderError ? <div className="render-error" role="alert">{renderError}</div> : !renderReady ? <div className="canvas-loading"><LoaderCircle size={20} className="loading-spinner"/></div> : transition && !viewingPlayback ? <><div className="compare-stages"><div className="compare-column"><div className="compare-label"><span>From</span>{scene.compositions[transition.fromId]?.name}</div><Stage frame={compositionFrame(scene, scene.compositions[transition.fromId])} compositionId={transition.fromId} interactive={false} prefix="from"/><div className="compare-caption">{activeIds.length === 1 ? scene.objects[activeIds[0]]?.name : 'Start state'}<span><ArrowRight size={12}/>{activeIds.length === 1 && !scene.compositions[transition.fromId].states[activeIds[0]]?.visible ? 'Enter' : 'Transition'}</span></div></div><div className="compare-column"><div className="compare-label"><span>To</span>{scene.compositions[transition.toId]?.name}</div><Stage frame={transitionPreview || compositionFrame(scene, scene.compositions[transition.toId])} compositionId={transition.toId} stateEditing={!transitionPreview} prefix="to"/><div className="compare-caption">{activeIds.length === 1 ? scene.objects[activeIds[0]]?.name : 'End state'}<span>{activeIds.length === 1 ? ANIMATION_LABEL(transition.tracks[activeIds[0]]?.type) : 'Composition'}</span></div></div></div><div className="preview-transport"><IconButton label={playing ? 'プレビューを停止' : 'Transition をプレビュー'} onClick={() => play('transition')}>{playing ? <Pause size={14} fill="currentColor"/> : <Play size={14} fill="currentColor"/>}</IconButton><span>{ms(localTime)} / {ms(transition.duration)} ms</span><input aria-label="Transition preview position" type="range" min={0} max={transition.duration} value={localTime} step={1} onChange={e => seek((selectedSegment?.start || 0) + Number(e.target.value), 'transition')}/></div></> : <div className="main-stage-area"><Stage frame={currentFrame} compositionId={compositionId} interactive={!viewingPlayback} zoom={zoom}/><div className="floating-tools">{([[MousePointer2,'select','選択 (V)'],[Square,'rectangle','四角形 (R)'],[Circle,'circle','円 (O)'],[Spline,'path','ベジェ曲線 (P)'],[Sigma,'equation','数式 (E)'],[Type,'text','テキスト (T)'],[ArrowUpRight,'arrow','矢印 (L)'],[Minus,'numberline','数直線']] as const).map(([Icon,value,label]) => <IconButton key={value} label={label} active={tool===value} onClick={() => activateTool(value)}><Icon size={18} strokeWidth={1.5}/></IconButton>)}<div className="tool-divider"/><IconButton label="共同編集チャット" active={rightTab==='assistant'} onClick={() => setRightTab(rightTab==='assistant'?'properties':'assistant')}><MessageCircle size={19}/></IconButton></div>{tool !== 'select' && <div className="tool-instruction">キャンバスをクリック、またはドラッグして追加<span>Esc でキャンセル</span></div>}</div>}
     </div><Timeline zoom={zoom} setZoom={setZoom}/></main>
     <aside ref={rightPanel} className="right-panel"><div className="inspector-tabs"><button className={rightTab==='properties'?'selected':''} onClick={() => setRightTab('properties')}><SlidersHorizontal size={13}/>Design</button><button aria-label="Chat" className={rightTab==='assistant'?'selected':''} onClick={() => setRightTab('assistant')}><MessageCircle size={13}/>Chat{unreadChat > 0 && <span className="chat-unread" aria-label={`${unreadChat} 件の未読`}>{Math.min(unreadChat, 99)}</span>}</button></div>{rightTab==='properties' && (viewingPlayback ? <PlaybackPanel scene={scene} segment={playbackSegment} playhead={playhead} onEdit={() => editMoment()}/> : <Inspector/>)}<div className="assistant-tab-content" hidden={rightTab!=='assistant'}><AssistantPanel onOpenScene={changeScene} onEditMoment={() => editMoment()}/></div></aside>
     {toast && <div className="toast" role="status"><Check size={15}/>{toast}</div>}
     <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} project={project}/>
-    <Modal open={shareOpen} onOpenChange={setShareOpen} title="A little better, together." description="同じリンクを開けば、このプロジェクトを一緒に編集できます。"><div className="share-link"><input aria-label="共有リンク" readOnly value={location.href} onFocus={e => e.currentTarget.select()}/><button className="primary-button" onClick={share}>{copied?<Check size={14}/>:<Copy size={14}/>}<span>{copied?'Copied':'Copy link'}</span></button></div><div className="share-participants"><h3>In this project <span>{participants.length}</span></h3>{participants.map(peer=><div key={peer.clientId}><span className="avatar" style={{ background:peer.color }}>{peer.name.slice(-2).toUpperCase()}</span><span>{peer.name}</span><small>{peer.clientId===store.doc.clientID?'You':'Editing'}</small></div>)}</div><label className="name-field">表示名<input value={name} onChange={e=>setName(e.target.value)} onBlur={()=>store.setName(name)} maxLength={40}/></label><div className="share-footer"><span><Link2 size={12}/>リンクを知っている人が編集できます</span><button className="text-button" onClick={()=>download(new Blob([JSON.stringify(project,null,2)],{type:'application/json'}),`${project.name}.poietra.json`)}><Download size={13}/>Save project</button></div></Modal>
+    <Modal open={shareOpen} onOpenChange={setShareOpen} title="A little better, together." description="同じリンクを開けば、このプロジェクトを一緒に編集できます。"><div className="share-link"><input aria-label="共有リンク" readOnly value={location.href} onFocus={e => e.currentTarget.select()}/><button className="primary-button" onClick={share}>{copied?<Check size={14}/>:<Copy size={14}/>}<span>{copied?'Copied':'Copy link'}</span></button></div><div className="share-participants"><h3>In this project <span>{participants.length}</span></h3>{participants.map(peer=><div key={peer.clientId}><span className="avatar" style={{ background:peer.color }}>{peer.name.slice(-2).toUpperCase()}</span><span>{peer.name}</span><small>{peer.clientId===store.doc.clientID?'You':'Editing'}</small></div>)}</div><label className="name-field">表示名<input value={name} onChange={e=>setName(e.target.value)} onBlur={()=>store.setName(name)} maxLength={40}/></label><div className="share-footer"><span><Link2 size={12}/>リンクを知っている人が編集できます</span><button className="text-button" disabled={savingProject} onClick={()=>void saveProject()}><Download size={13}/>Save project</button></div></Modal>
     <Modal open={helpOpen} onOpenChange={setHelpOpen} title="An idea. Then, a little motion." description="Composition で場面を作り、Transition でその間の動きを組み立てます。"><div className="help-steps"><div><span>01</span><h3>Shape the moment</h3><p>図形や数式を配置。プロパティから色や大きさを調整します。</p></div><div><span>02</span><h3>Find the movement</h3><p>次の Composition を作り、Transition で個々の動きを重ねます。</p></div><div><span>03</span><h3>Make it yours</h3><p>友人や AI と仕上げて、ひとつの動画に。</p></div></div><div className="keyboard-shortcuts">{[['Space','再生 / 停止'],['V / R / O / P','選択 / 四角 / 円 / パス'],['Drag / Shift + click','範囲選択 / 追加選択'],['↑ ↓ ← → / Shift','1 px / 10 px 移動'],['⌘ / Ctrl + C / X / V','コピー / 切り取り / 貼り付け'],['⌘ / Ctrl + ⇧V','同じ位置に貼り付け'],['⌘ / Ctrl + D','複製'],['⌘ / Ctrl + G / ⇧G','Group / Ungroup'],['⌘ / Ctrl + Z','元に戻す'],['Delete','この場面から非表示']].map(([key,action])=><div key={key}><span>{action}</span><kbd>{key}</kbd></div>)}</div></Modal>
     <ProjectPreview open={projectPreviewOpen} onOpenChange={setProjectPreviewOpen} project={project} renderer={renderer} kernel={kernel} createFramePainter={createFramePainter} onEdit={(id, next) => { changeScene(id); setRequestedSelection(next); setPlayhead(sceneSegments(store.scene(id)).find(segment => segment.id === next.id)?.start || 0); setRightTab('properties'); }}/>
     {exporter && <ExportDialog open={exportOpen} onOpenChange={setExportOpen} exporter={exporter} scene={scene} project={project} kernel={kernel} name={project.name}/>}

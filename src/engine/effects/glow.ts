@@ -106,6 +106,14 @@ function composite(gl: WebGL2RenderingContext, resources: GlowResources, withGlo
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
+/** Shrink before growing so an aspect change cannot allocate both larger axes. */
+function resizeDrawingBuffer(canvas: HTMLCanvasElement, width: number, height: number) {
+  if (width < canvas.width) canvas.width = width;
+  if (height < canvas.height) canvas.height = height;
+  if (width > canvas.width) canvas.width = width;
+  if (height > canvas.height) canvas.height = height;
+}
+
 /** Use a private WebGL canvas so the caller's output remains available for Canvas 2D fallback. */
 export function createGlowRenderer(): GlowRenderer | null {
   if (typeof document === 'undefined') return null;
@@ -167,9 +175,7 @@ export function createGlowRenderer(): GlowRenderer | null {
         throw new Error('The Glow blur radius is invalid or exceeds WebGL texture limits.');
       }
       if (width !== textureWidth || height !== textureHeight) {
-        // Each assignment reallocates the drawing buffer, even when the value is unchanged.
-        if (canvas.width !== width) canvas.width = width;
-        if (canvas.height !== height) canvas.height = height;
+        resizeDrawingBuffer(canvas, width, height);
         if (context.drawingBufferWidth !== width || context.drawingBufferHeight !== height) {
           throw new Error('WebGL cannot allocate the requested Glow output size.');
         }

@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { Project } from './model';
+import { ImageAssetSchema } from './images';
 
-export const PROJECT_FILE_LIMIT = 1024 * 1024;
+export const PROJECT_FILE_LIMIT = 32 * 1024 * 1024;
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => !['__proto__', 'constructor', 'prototype'].includes(value));
 const number = z.number().min(-100000).max(100000);
 const duration = z.number().min(0).max(600000);
@@ -18,7 +19,7 @@ const state = z.object({
 const composition = z.object({ id, name: z.string().max(200), duration, accent: color, states: z.record(id, state) });
 const scene = z.object({
   id, name: z.string().max(200), width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192), background: color,
-  objects: z.record(id, z.object({ id, name: z.string().max(200), kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'path', 'arrow', 'numberline']), order: number, groupId: id.nullable(), locked: z.boolean() })),
+  objects: z.record(id, z.object({ id, name: z.string().max(200), kind: z.enum(['circle', 'rectangle', 'text', 'equation', 'path', 'arrow', 'numberline', 'image']), order: number, groupId: id.nullable(), locked: z.boolean(), image: ImageAssetSchema.optional() }).refine(object => object.kind !== 'image' || !!object.image)),
   compositionOrder: z.array(id).min(1).max(100), compositions: z.record(id, composition),
   transitions: z.record(id, z.object({ id, fromId: id, toId: id, duration, tracks: z.record(id, z.object({ objectId: id, type: z.enum(['move', 'write', 'fade', 'grow', 'none']), start: duration, duration, easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']), order: z.enum(['together', 'sequential']), path: bezier.nullable() })) })),
 });
@@ -30,7 +31,7 @@ function exactOrder(order: string[], entries: Record<string, { id: string }>) {
 
 /** Validate references too: syntactically valid JSON must never strand the editor. */
 export function parseProjectFile(text: string): Project {
-  if (new TextEncoder().encode(text).length > PROJECT_FILE_LIMIT) throw new Error('プロジェクトファイルは 1 MB 以下にしてください。');
+  if (new TextEncoder().encode(text).length > PROJECT_FILE_LIMIT) throw new Error('プロジェクトファイルは 32 MB 以下にしてください。');
   let value: unknown;
   try {
     value = JSON.parse(text, (key, value) => {

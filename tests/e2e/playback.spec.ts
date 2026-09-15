@@ -48,6 +48,42 @@ test('a scene preview started from a transition keeps its scene ruler and return
   await expect(page.getByRole('spinbutton', { name: 'Animation duration', exact: true })).toHaveValue('600');
 });
 
+test('Glow remains visible through scene playback, pause, and direct seeking', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await open(page);
+  for (const composition of ['Composition 1', 'Composition 2']) {
+    await page.getByRole('button', { name: composition, exact: true }).click();
+    await page.getByRole('button', { name: 'Circle', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Object effect', exact: true }).selectOption('glow');
+  }
+  const slider = page.getByRole('slider', { name: '再生位置', exact: true });
+  const canvas = page.locator('[data-testid="stage-main"] .scene-canvas');
+  const hitSurface = page.locator('[data-testid="stage-main"] .scene-hit-svg');
+  const moveMidpointTime = 1300;
+  const endingCompositionTime = 2500;
+
+  await slider.fill(String(moveMidpointTime));
+  await expect(circle(page)).toHaveAttribute('transform', 'translate(588.75 355) rotate(0)');
+  await expect(circle(page)).toHaveAttribute('filter', /-glow\)$/);
+  await expect(canvas).toBeVisible();
+  await expect(hitSurface).toHaveCount(1);
+  await page.getByRole('button', { name: 'シーンを再生', exact: true }).click();
+  await expect.poll(async () => Number(await slider.inputValue())).toBeGreaterThan(moveMidpointTime);
+  await page.getByRole('button', { name: '一時停止', exact: true }).click();
+  const pausedTime = await slider.inputValue();
+  await expect(canvas).toBeVisible();
+  await expect(hitSurface).toHaveCount(1);
+  await expect(slider).toHaveValue(pausedTime);
+
+  await slider.fill(String(endingCompositionTime));
+  await expect(circle(page)).toHaveAttribute('transform', 'translate(955 190) rotate(0)');
+  await expect(circle(page)).toHaveAttribute('filter', /-glow\)$/);
+  await expect(canvas).toBeVisible();
+  await expect(hitSurface).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
 test('choosing a drawing tool from preview adds to the displayed composition', async ({ page }) => {
   await open(page);
   await page.getByRole('slider', { name: '再生位置', exact: true }).fill('2500');
