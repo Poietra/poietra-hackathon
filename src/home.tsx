@@ -3,7 +3,7 @@ import type { Root } from 'react-dom/client';
 import { Boundary } from './ui/Boundary';
 import { LandingPage } from './ui/LandingPage';
 import { lastRoom, roomLink } from './navigation';
-import { applyPageLanguage, getLocale, pageCopy, setLocale, type Locale } from './locale';
+import { applyPageLanguage, getLocale, pageCopy } from './locale';
 
 function Home() {
   const [locale, setLanguage] = useState(getLocale);
@@ -18,7 +18,6 @@ function Home() {
     window.addEventListener('languagechange', syncLanguage);
     return () => window.removeEventListener('languagechange', syncLanguage);
   }, []);
-  function changeLocale(next: Locale) { setLocale(next); setLanguage(next); }
 
   async function start(template: 'blank' | 'example') {
     if (controller.current) return;
@@ -41,7 +40,7 @@ function Home() {
     }
   }
   function cancel() { controller.current?.abort(); controller.current = null; setBusy(null); }
-  return <LandingPage locale={locale} onLocaleChange={changeLocale} onStart={template => void start(template)} busy={busy} error={failed ? pageCopy[locale].projectError : ''} onCancel={cancel} resumeUrl={resumeUrl}/>;
+  return <LandingPage locale={locale} onStart={template => void start(template)} busy={busy} error={failed ? pageCopy[locale].projectError : ''} onCancel={cancel} resumeUrl={resumeUrl}/>;
 }
 
 export function openHome(root: Root) { root.render(<StrictMode><Boundary><Home/></Boundary></StrictMode>); }
