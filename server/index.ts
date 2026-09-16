@@ -7,12 +7,14 @@ import { getRoom, ROOM_PATTERN, rooms } from './collaboration';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { handleImages, saveRoomImage } from './images';
 import { handleMedia } from './media';
+import { createNodeAuth } from './auth-node';
 
 const port = Number(process.env.PORT || 5173);
 const production = process.env.NODE_ENV === 'production';
 const model = process.env.OPENAI_MODEL || 'gpt-6-astra';
 const imageModel = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
 const apiKey = process.env.OPENAI_API_KEY;
+const handleAuth = createNodeAuth(process.env, resolve(process.env.POIETRA_DATA_DIR || '.data', 'accounts'));
 const json = (response: ServerResponse, status: number, value: unknown) => { response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(value)); };
 async function body(request: IncomingMessage) {
   const chunks: Buffer[] = []; let size = 0;
@@ -40,6 +42,7 @@ const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js
 server.on('request', async (request, response) => {
   const url = new URL(request.url || '/', 'http://localhost');
   if (url.pathname === '/api/health') { json(response, 200, { ok: true, ai: !!apiKey }); return; }
+  if (await handleAuth(request, response)) return;
   if (await handleImages(request, response, url.pathname)) return;
   if (await handleMedia(request, response, url.pathname)) return;
   if (url.pathname === '/api/ai/propose' && request.method === 'POST') {

@@ -52,7 +52,7 @@ describe('composition structure', () => {
     expect(changed.compositions[copyId].duration).toBe(1000);
     expect(changed.transitions['transition-1']).toEqual({ ...original.transitions['transition-1'], fromId: copyId });
     expect(getShared(doc, ['scenes', 'scene-1', 'transitions', 'transition-1'])).toBe(transitionMap);
-    expect(Object.values(changed.transitions).find(transition => transition.toId === copyId)).toMatchObject({ fromId: 'comp-1', duration: 800, tracks: {} });
+    expect(Object.values(changed.transitions).find(transition => transition.toId === copyId)).toMatchObject({ fromId: 'comp-1', duration: 800, tracks: expect.objectContaining({ circle: expect.objectContaining({ implicit: true }), equation: expect.objectContaining({ implicit: true }), sigmoid: expect.objectContaining({ implicit: true }) }) });
     applyChanges(doc, [{ path: statePath(copyId, 'x'), value: 777 }, { path: [...statePath(copyId, 'path'), 'c1', 'x'], value: 123 }]);
     expect(scene(doc).compositions['comp-1'].states.circle.x).toBe(245);
     expect(scene(doc).compositions['comp-1'].states.circle.path.c1.x).toBe(140);
@@ -66,7 +66,7 @@ describe('composition structure', () => {
     const after = scene(doc);
     expect(after.compositionOrder).toEqual(['comp-1', 'comp-2', copyId]);
     expect(after.transitions['transition-1']).toEqual(before.transitions['transition-1']);
-    expect(Object.values(after.transitions).find(transition => transition.toId === copyId)).toMatchObject({ fromId: 'comp-2', duration: 800, tracks: {} });
+    expect(Object.values(after.transitions).find(transition => transition.toId === copyId)).toMatchObject({ fromId: 'comp-2', duration: 800, tracks: expect.objectContaining({ circle: expect.objectContaining({ implicit: true }), equation: expect.objectContaining({ implicit: true }), sigmoid: expect.objectContaining({ implicit: true }) }) });
     parseProjectFile(JSON.stringify(readProject(doc)));
     doc.destroy();
   });
@@ -81,7 +81,7 @@ describe('composition structure', () => {
     expect(removed.selectedId).toBe('comp-2');
     expect(removed.removedTransitionIds).toHaveLength(2);
     expect(scene(doc).compositionOrder).toEqual(['comp-1', 'comp-2']);
-    expect(Object.values(scene(doc).transitions)).toEqual([expect.objectContaining({ fromId: 'comp-1', toId: 'comp-2', duration: 800, tracks: {} })]);
+    expect(Object.values(scene(doc).transitions)).toEqual([expect.objectContaining({ fromId: 'comp-1', toId: 'comp-2', duration: 800, tracks: expect.objectContaining({ circle: expect.objectContaining({ implicit: true }), equation: expect.objectContaining({ implicit: true }), sigmoid: expect.objectContaining({ implicit: true }) }) })]);
     undo.undo();
     expect(readProject(doc)).toEqual(before);
     undo.destroy(); doc.destroy();

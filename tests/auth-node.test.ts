@@ -1,0 +1,41 @@
+import { afterEach, expect, it } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { AuthService, authHash } from '../server/auth';
+import { createNodeAuth, NodeAuthRepository } from '../server/auth-node';
+
+const cleanups: Array<() => Promise<void> | void> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+it('serves persisted private accounts over real local HTTP; guest routes pass through and logout revokes the cookie', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'poietra-node-account-'));
+  cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+  const repository = new NodeAuthRepository(directory), user = { id: await authHash('google:verified'), name: 'Verified user', provider: 'google' as const };
+  // A server-verified identity is seeded at the repository boundary, never through a public endpoint.
+  const token = 's'.repeat(43), sessionCookie = `poietra_session=${token}`;
+  await repository.putRecord('session:' + await authHash(token), { kind: 'session', user, expiresAt: Date.now() + 60000 });
+  const handler = createNodeAuth({}, directory);
+  cleanups.push(() => handler.dispose());
+  const server: Server = createServer(async (request, response) => { if (!await handler(request, response)) { response.statusCode = 202; response.end('guest route'); } });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing local address');
+  const origin = `http://127.0.0.1:${address.port}`, room = 'node-project-123456';
+  expect(await (await fetch(origin + '/api/auth/session')).json()).toEqual({ user: null, providers: { google: false, github: false } });
+  expect((await fetch(origin + '/api/projects')).status).toBe(401);
+  expect((await fetch(origin + '/sync/' + room)).status).toBe(202);
+  expect((await fetch(origin + '/api/rooms/' + room + '/images')).status).toBe(202);
+  const headers = { Cookie: sessionCookie, Origin: origin, 'X-Poietra-Account': user.id, 'Content-Type': 'application/json' };
+  const saved = await fetch(origin + '/api/projects/' + room, { method: 'PUT', headers, body: JSON.stringify({ name: 'Node persisted' }) });
+  expect(saved.status).toBe(200); expect((await saved.json()).project).toMatchObject({ roomId: room, name: 'Node persisted' });
+  expect((await fetch(origin + '/api/projects/' + room, { method: 'PUT', headers, body: JSON.stringify({ name: 'Oversized', padding: 'x'.repeat(4096) }) })).status).toBe(400);
+  expect((await fetch(origin + '/api/projects/' + room, { method: 'DELETE', headers: { ...headers, Origin: 'https://evil.example' } })).status).toBe(403);
+  const session = await fetch(origin + '/api/auth/session', { headers }); expect((await session.json()).user).toEqual(user); expect(session.headers.get('Cache-Control')).toBe('no-store');
+  const restarted = new AuthService({}, new NodeAuthRepository(directory));
+  expect((await (await restarted.handle(new Request(origin + '/api/projects', { headers })))!.json()).projects[0].name).toBe('Node persisted');
+  const logout = await fetch(origin + '/api/auth/logout', { method: 'POST', headers });
+  expect(logout.status).toBe(204); expect(logout.headers.get('Set-Cookie')).toContain('HttpOnly; SameSite=Lax; Max-Age=0');
+  expect((await fetch(origin + '/api/projects', { headers })).status).toBe(401);
+  expect((await repository.listProjects(user.id))[0].name).toBe('Node persisted');
+});

@@ -1,0 +1,27 @@
+.projects-dialog { max-height: min(90dvh, 860px); overflow-y: auto; }
+.project-account { padding: 4px 0 16px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.project-account h3, .saved-projects h3 { margin: 0; font-size: 13px; font-weight: 500; }
+.account-hint { color: var(--muted); font-size: 11px; line-height: 1.8; margin: 8px 0 0; }
+.account-login-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.account-login-actions a { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 0 12px; color: inherit; font-size: 12px; text-decoration: none; border: 1px solid var(--line); border-radius: 6px; background: var(--color-field); }
+.account-login-actions a:hover { background: #30313e; }
+.provider-letter { width: 16px; text-align: center; font-weight: 600; }
+.account-heading { display: flex; align-items: center; gap: 10px; }
+.account-initial { display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 50%; background: #303352; color: #d7d8e4; }
+.account-heading > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.account-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.account-heading > div > span { color: var(--muted); font-size: 10px; }
+.account-error { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.account-error p { flex: 1; }
+.saved-projects { margin-bottom: 18px; }
+.saved-projects-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.saved-project-list { list-style: none; margin: 10px 0 0; padding: 0; max-height: 216px; overflow-y: auto; }
+.saved-project-list li { display: flex; align-items: center; border-radius: 5px; }
+.saved-project-list li:hover { background: var(--color-field); }
+.saved-project-list a { display: flex; align-items: center; gap: 10px; padding: 10px 6px; flex: 1; min-width: 0; color: inherit; text-decoration: none; }
+.saved-project-icon { flex: 0 0 24px; color: var(--muted); display: grid; place-items: center; }
+.saved-project-list [aria-current="page"] .saved-project-icon { color: var(--accent); }
+.saved-project-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.saved-project-title strong { font-size: 12px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-project-title small { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.saved-project-list > li > button { flex-shrink: 0; }

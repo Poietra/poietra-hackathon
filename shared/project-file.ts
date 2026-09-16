@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Project } from './model';
+import { PROPERTY_CHANNELS, propertyTimingKey, validateAnimationTrack, type Project } from './model';
 import { ImageAssetSchema } from './images';
 import { AudioTrackSchema, MediaAssetSchema, MediaPlaybackSchema } from './media';
 
@@ -17,6 +17,8 @@ const state = z.object({
   fontSize: z.number().min(0).max(10000), cornerRadius: z.number().min(0).max(10000),
   effect: z.enum(['none', 'glow']), path: bezier,
 });
+const timing = z.object({ start: duration, duration, easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']) });
+const propertyTimings = Object.fromEntries(PROPERTY_CHANNELS.map(channel => [propertyTimingKey(channel), timing.nullable().optional()]));
 const composition = z.object({ id, name: z.string().max(200), duration, accent: color, states: z.record(id, state) });
 const scene = z.object({
   id, name: z.string().max(200), width: z.number().int().min(1).max(8192), height: z.number().int().min(1).max(8192), background: color,
@@ -25,7 +27,7 @@ const scene = z.object({
     .refine(object => object.kind !== 'video' || !!object.media?.mime.startsWith('video/') && !!object.playback && object.playback.offset + object.playback.duration <= object.media.duration + 1)),
   audioTracks: z.record(id, AudioTrackSchema).optional(),
   compositionOrder: z.array(id).min(1).max(100), compositions: z.record(id, composition),
-  transitions: z.record(id, z.object({ id, fromId: id, toId: id, duration, tracks: z.record(id, z.object({ objectId: id, type: z.enum(['move', 'write', 'fade', 'grow', 'none']), start: duration, duration, easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']), order: z.enum(['together', 'sequential']), path: bezier.nullable() })) })),
+  transitions: z.record(id, z.object({ id, fromId: id, toId: id, duration, tracks: z.record(id, z.object({ ...propertyTimings, implicit: z.boolean().optional(), objectId: id, type: z.enum(['move', 'write', 'fade', 'grow', 'none']), start: duration, duration, easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']), order: z.enum(['together', 'sequential']), path: bezier.nullable() })) })),
 });
 const schema = z.object({ version: z.literal(1), name: z.string().max(100), sceneOrder: z.array(id).min(1).max(100), scenes: z.record(id, scene) });
 
@@ -58,8 +60,11 @@ export function parseProjectFile(text: string): Project {
       const index = scene.compositionOrder.indexOf(transition.fromId);
       if (key !== transition.id || index < 0 || scene.compositionOrder[index + 1] !== transition.toId || pairs.has(transition.fromId)) invalid();
       pairs.add(transition.fromId);
-      for (const [key, track] of Object.entries(transition.tracks)) if (!scene.objects[key] || track.objectId !== key || track.start + track.duration > transition.duration) invalid();
+      for (const [key, track] of Object.entries(transition.tracks)) {
+        if (!scene.objects[key] || track.objectId !== key) invalid();
+        try { validateAnimationTrack(track, transition.duration); } catch { invalid(); }
+      }
     }
   }
-  return project;
+  return project as Project;
 }

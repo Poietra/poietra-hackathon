@@ -1,2 +1,8 @@
 # Copy to .dev.vars for local Workers development. Keep real values out of Git.
 OPENAI_API_KEY=
+# Optional login for local Workers. Use localhost (not 127.0.0.1) consistently.
+AUTH_ORIGIN=http://localhost:8787
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=

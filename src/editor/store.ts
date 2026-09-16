@@ -3,7 +3,7 @@ import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { applyChanges, changesFor, getShared, LOCAL_ORIGIN, readProject, toShared, type Change } from '../../shared/document';
 import { makeBlankScene } from '../../shared/demo';
-import { COLORS, defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
+import { COLORS, PROPERTY_CHANNELS, propertyTimingKey, resolveTrack, implicitTracks, trackTimingEnd, validateAnimationTiming, validateAnimationTrack, defaultState, defaultTrack, newId, type AnimationTiming, type PropertyChannel, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { applyProposal, type EditProposal } from '../../shared/ai';
 import { RoomChat } from '../../shared/chat';
 import { ImageAssetSchema, type ImageAsset } from '../../shared/images';
@@ -208,6 +208,7 @@ export class EditorStore {
     const state = defaultState(kind, patch);
     const changes: Change[] = [{ path: ['scenes', sceneId, 'objects', id], value: { id, name, kind, ...(image ? { image } : {}), order: Math.max(-1, ...Object.values(scene.objects).map(o => o.order)) + 1, groupId: null, locked: false } }];
     for (const composition of Object.values(scene.compositions)) changes.push({ path: ['scenes', sceneId, 'compositions', composition.id, 'states', id], value: { ...state, visible: composition.id === compositionId } });
+    for (const transition of Object.values(scene.transitions)) changes.push({ path: ['scenes', sceneId, 'transitions', transition.id, 'tracks', id], value: defaultTrack(id, { duration: transition.duration, implicit: true }) });
     this.edit(changes);
     return id;
   }
@@ -227,6 +228,7 @@ export class EditorStore {
       const scale = Math.min(1, scene.width * 0.75 / asset.width, scene.height * 0.75 / asset.height);
       const state = defaultState('video', { x: point?.x ?? scene.width / 2, y: point?.y ?? scene.height / 2, width: asset.width * scale, height: asset.height * scale, cornerRadius: 0, fill: 'none', strokeWidth: 0 });
       changes.push({ path: ['scenes', sceneId, 'objects', objectId], value: { id: objectId, name: name.slice(0, 200), kind, media: asset, playback, order: Math.max(-1, ...Object.values(scene.objects).map(object => object.order)) + 1, groupId: null, locked: false } });
+      for (const transition of Object.values(scene.transitions)) changes.push({ path: ['scenes', sceneId, 'transitions', transition.id, 'tracks', objectId], value: defaultTrack(objectId, { duration: transition.duration, implicit: true }) });
       const first = scene.compositionOrder.indexOf(compositionId);
       for (const [index, id] of scene.compositionOrder.entries()) changes.push({ path: ['scenes', sceneId, 'compositions', id, 'states', objectId], value: { ...state, visible: index >= first } });
     }
@@ -278,7 +280,7 @@ export class EditorStore {
       const source = last ? getShared(this.doc, ['scenes', sceneId, 'compositions', last.id]) : null;
       if (source instanceof Y.Map && source.get('deleted') === true) source.set('deleted', false);
       applyChanges(this.doc, [{ path: ['scenes', sceneId, 'compositions', id], value: { id, name: `Composition ${scene.compositionOrder.length + 1}`, duration: 1000, accent: COLORS[scene.compositionOrder.length % COLORS.length], states: structuredClone(last?.states || {}) } },
-        ...(last ? [{ path: ['scenes', sceneId, 'transitions', transitionId], value: { id: transitionId, fromId: last.id, toId: id, duration: 800, tracks: {} } }] : [])]);
+        ...(last ? [{ path: ['scenes', sceneId, 'transitions', transitionId], value: { id: transitionId, fromId: last.id, toId: id, duration: 800, tracks: implicitTracks(Object.keys(scene.objects), 800) } }] : [])]);
       (getShared(this.doc, ['scenes', sceneId, 'compositionOrder']) as Y.Array<string>).push([id]);
     }, LOCAL_ORIGIN);
     this.undoManager.stopCapturing(); return id;
@@ -287,21 +289,45 @@ export class EditorStore {
   setComposition(sceneId: string, id: string, patch: Partial<Pick<Composition, 'name' | 'duration'>>) { this.edit(changesFor(['scenes', sceneId, 'compositions', id], patch)); }
 
   setTransitionDuration(sceneId: string, id: string, duration: number) {
-    const scene = this.scene(sceneId);
-    const transition = scene.transitions[id]; if (!transition) return;
-    duration = Math.max(duration, ...Object.values(transition.tracks).filter(track => scene.objects[track.objectId]?.locked).map(track => track.start + track.duration));
+    const scene = this.scene(sceneId), transition = scene.transitions[id]; if (!transition) return;
+    if (!Number.isFinite(duration) || duration < 0 || duration > 120000) throw new Error('Transition の長さは 0〜120000 ms にしてください。');
+    duration = Math.max(duration, ...Object.values(transition.tracks).filter(track => scene.objects[track.objectId]?.locked).map(track => trackTimingEnd(track, !track.implicit)));
     const base = ['scenes', sceneId, 'transitions', id];
     const changes: Change[] = [{ path: [...base, 'duration'], value: duration }];
-    for (const [objectId, track] of Object.entries(transition.tracks)) if (!scene.objects[objectId]?.locked) changes.push(...changesFor([...base, 'tracks', objectId], { start: Math.min(track.start, duration), duration: Math.min(track.duration, Math.max(0, duration - track.start)) }));
+    for (const [objectId, track] of Object.entries(transition.tracks)) if (!scene.objects[objectId]?.locked) {
+      const path = [...base, 'tracks', objectId];
+      if (!track.implicit) changes.push(...changesFor(path, { start: Math.min(track.start, duration), duration: Math.min(track.duration, Math.max(0, duration - track.start)) }));
+      for (const channel of PROPERTY_CHANNELS) {
+        const key = propertyTimingKey(channel), timing = track[key];
+        if (timing && timing.start + timing.duration > duration) changes.push({ path: [...path, key], value: { ...timing, start: Math.min(timing.start, duration), duration: Math.min(timing.duration, Math.max(0, duration - timing.start)) } });
+      }
+    }
     this.edit(changes);
   }
 
   setTrack(sceneId: string, transitionId: string, objectId: string, patch: Partial<AnimationTrack>, separate = true) {
-    const scene = this.scene(sceneId);
-    const transition = scene.transitions[transitionId]; if (!transition || !scene.objects[objectId] || scene.objects[objectId].locked) return;
+    const scene = this.scene(sceneId), transition = scene.transitions[transitionId];
+    if (!transition || !scene.objects[objectId] || scene.objects[objectId].locked) return;
+    const previous = transition.tracks[objectId], resolved = resolveTrack(previous, objectId, transition.duration);
+    const track = { ...resolved, ...patch, implicit: false };
+    validateAnimationTrack(track, transition.duration);
     const base = ['scenes', sceneId, 'transitions', transitionId, 'tracks', objectId];
-    if (!transition.tracks[objectId]) this.edit([{ path: base, value: defaultTrack(objectId, { duration: transition.duration, ...patch }) }], separate);
-    else this.edit(changesFor(base, patch), separate);
+    if (!previous) this.edit([{ path: base, value: track }], separate);
+    else this.edit(changesFor(base, { ...(previous.implicit ? { start: resolved.start, duration: resolved.duration, implicit: false } : {}), ...patch }), separate);
+  }
+
+  setPropertyTiming(sceneId: string, transitionId: string, objectId: string, channel: PropertyChannel, timing: AnimationTiming | null, separate = true) {
+    const scene = this.scene(sceneId), transition = scene.transitions[transitionId];
+    if (!transition || !scene.objects[objectId] || scene.objects[objectId].locked) return;
+    if (!PROPERTY_CHANNELS.includes(channel)) throw new Error('アニメーションのプロパティを選択してください。');
+    if (timing) validateAnimationTiming(timing, transition.duration);
+    // Never let two peers create the same track parent independently. New objects
+    // carry it at creation; legacy documents receive it from the authoritative server.
+    const track = transition.tracks[objectId];
+    if (!track) throw new Error('アニメーションを準備しています。同期完了後にもう一度編集してください。');
+    const key = propertyTimingKey(channel), current = track[key];
+    if ((!current && !timing) || current && timing && current.start === timing.start && current.duration === timing.duration && current.easing === timing.easing) return;
+    this.edit([{ path: ['scenes', sceneId, 'transitions', transitionId, 'tracks', objectId, key], value: timing }], separate);
   }
 
   linkedIds(sceneId: string, selected: string[]) {

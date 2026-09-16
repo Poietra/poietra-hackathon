@@ -62,9 +62,9 @@ test('a group-created track survives peer offline edits and creator Undo while o
     await undo(alice.page);
     await expect(bob.page.getByRole('combobox', { name: 'Easing', exact: true })).toHaveValue('easeOut');
     await undo(alice.page);
-    await expect(alice.page.getByText(retainedNotice, { exact: true })).toBeVisible();
     await expect.poll(() => data.tracks().circle.duration).toBe(600);
-    await expect.poll(() => data.tracks().sigmoid).toEqual(defaultTrack('sigmoid', { duration: 400, easing: 'easeOut' }));
+    await expect.poll(() => data.tracks().sigmoid).toEqual(defaultTrack('sigmoid', { duration: 400, easing: 'easeOut', implicit: false }));
+    await expect(alice.page.getByText(retainedNotice, { exact: true })).toBeVisible();
     for (const client of [alice, bob]) await expect(client.page.getByRole('button', { name: 'Sigmoid path Move: 0–400 ms', exact: true })).toBeVisible();
     await expect(bob.page.getByRole('combobox', { name: 'Easing', exact: true })).toHaveValue('easeOut');
     await expect(bob.page.getByRole('spinbutton', { name: 'Animation duration', exact: true })).toHaveValue('400');
@@ -86,11 +86,11 @@ test('single-track creation Undo removes untouched data and retains peer-edited 
     await field(alice.page, 'Position X', 300);
     await alice.page.getByRole('button', { name: 'Sigmoid path', exact: true }).click();
     await alice.page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
-    await field(alice.page, 'Animation duration', 400); // EditorStore.setTrack creates the missing map.
+    await field(alice.page, 'Animation duration', 400); // Activate the automatic track with explicit timing.
     await expect.poll(() => data.tracks().sigmoid?.duration).toBe(400);
     await undo(alice.page);
     await expect(alice.page.getByRole('button', { name: 'Add animation', exact: true })).toBeVisible();
-    await expect.poll(() => data.tracks().sigmoid).toBeUndefined();
+    await expect.poll(() => data.tracks().sigmoid).toEqual(defaultTrack('sigmoid', { implicit: true }));
     await redo(alice.page);
     await bob.page.getByRole('button', { name: 'Sigmoid path', exact: true }).click();
     await bob.page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
@@ -98,6 +98,7 @@ test('single-track creation Undo removes untouched data and retains peer-edited 
     await bob.page.getByRole('combobox', { name: 'Easing', exact: true }).selectOption('easeOut');
     await expect(alice.page.getByRole('combobox', { name: 'Easing', exact: true })).toHaveValue('easeOut');
     await undo(alice.page);
+    await expect.poll(() => data.tracks().sigmoid).toEqual(defaultTrack('sigmoid', { duration: 400, easing: 'easeOut', implicit: false }));
     await expect(alice.page.getByText(retainedNotice, { exact: true })).toBeVisible();
     expect(data.project().scenes['scene-1'].compositions['comp-1'].states.circle.x).toBe(300);
     await expect(alice.page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true })).toBeEnabled();
@@ -109,7 +110,7 @@ test('single-track creation Undo removes untouched data and retains peer-edited 
     await expect.poll(() => data.project().scenes['scene-1'].compositions['comp-1'].states.circle.x).toBe(245);
     await redo(alice.page);
     await expect.poll(() => data.project().scenes['scene-1'].compositions['comp-1'].states.circle.x).toBe(300);
-    expect(data.tracks().sigmoid).toEqual(defaultTrack('sigmoid', { duration: 400, easing: 'easeOut' }));
+    expect(data.tracks().sigmoid).toEqual(defaultTrack('sigmoid', { duration: 400, easing: 'easeOut', implicit: false }));
     expect(parseProjectFile(JSON.stringify(data.project()))).toEqual(data.project());
     await expect(bob.page.getByRole('button', { name: 'Sigmoid path Move: 0–400 ms', exact: true })).toBeVisible();
   } finally { data.close(); await alice.context.close(); await bob.context.close(); }

@@ -1,4 +1,4 @@
-import { clamp, orderedObjects, sceneSegments, type AnimationTrack, type Composition, type ObjectState, type Scene, type SceneObject, type Transition } from '../../shared/model';
+import { getPropertyTiming, hasPropertyTiming, resolveTrack, type PropertyChannel, clamp, orderedObjects, sceneSegments, type AnimationTrack, type Composition, type ObjectState, type Scene, type SceneObject, type Transition } from '../../shared/model';
 import type { MotionKernel } from './kernel';
 
 export interface RenderObject { object: SceneObject; state: ObjectState; writeProgress: number; order: 'together' | 'sequential'; videoTimeMs?: number; videoFrame?: string }
@@ -42,23 +42,29 @@ export function transitionFrame(scene: Scene, transition: Transition, time: numb
     if ((!aVisible && !bVisible) || (!fromState && !toState)) return [];
     const a = fromState ?? toState!;
     const b = toState ?? fromState!;
-    const track: AnimationTrack = transition.tracks[object.id] ?? { objectId: object.id, type: 'move', start: 0, duration: transition.duration, easing: 'easeInOut', order: 'together', path: null };
-    const progress = track.type === 'none' ? (time >= track.start + track.duration ? 1 : 0) : kernel.track_progress(time, track.start, track.duration, easingIds[track.easing]);
+    const track: AnimationTrack = resolveTrack(transition.tracks[object.id], object.id, transition.duration);
+    const timingProgress = (timing: Pick<AnimationTrack, 'start' | 'duration' | 'easing'>) => track.type === 'none' ? (time >= timing.start + timing.duration ? 1 : 0) : kernel.track_progress(time, timing.start, timing.duration, easingIds[timing.easing]);
+    const progress = timingProgress(track);
+    const channelProgress = (channel: PropertyChannel) => hasPropertyTiming(track, channel) ? timingProgress(getPropertyTiming(track, channel)) : progress;
+    const position = channelProgress('position'), shapePath = channelProgress('path'), reveal = channelProgress('reveal');
     const state = { ...a, visible: true, text: progress < 0.5 ? a.text : b.text };
-    for (const key of ['x', 'y', 'width', 'height', 'rotation', 'opacity', 'strokeWidth', 'fontSize', 'cornerRadius'] as const) state[key] = kernel.interpolate(a[key], b[key], progress);
-    state.fill = color(a.fill, b.fill, progress);
-    state.stroke = color(a.stroke, b.stroke, progress);
+    const numericChannels = { x: 'position', y: 'position', width: 'size', height: 'size', rotation: 'rotation', opacity: 'opacity', strokeWidth: 'strokeWidth', fontSize: 'fontSize', cornerRadius: 'cornerRadius' } as const;
+    for (const key of Object.keys(numericChannels) as Array<keyof typeof numericChannels>) state[key] = kernel.interpolate(a[key], b[key], channelProgress(numericChannels[key]));
+    state.fill = color(a.fill, b.fill, channelProgress('fill'));
+    state.stroke = color(a.stroke, b.stroke, channelProgress('stroke'));
     state.effect = progress < 0.5 ? a.effect : b.effect;
-    state.path = { c1: { x: kernel.interpolate(a.path.c1.x, b.path.c1.x, progress), y: kernel.interpolate(a.path.c1.y, b.path.c1.y, progress) }, c2: { x: kernel.interpolate(a.path.c2.x, b.path.c2.x, progress), y: kernel.interpolate(a.path.c2.y, b.path.c2.y, progress) } };
+    state.path = { c1: { x: kernel.interpolate(a.path.c1.x, b.path.c1.x, shapePath), y: kernel.interpolate(a.path.c1.y, b.path.c1.y, shapePath) }, c2: { x: kernel.interpolate(a.path.c2.x, b.path.c2.x, shapePath), y: kernel.interpolate(a.path.c2.y, b.path.c2.y, shapePath) } };
     if (track.path && aVisible && bVisible) {
-      state.x = kernel.cubic_bezier(a.x, track.path.c1.x, track.path.c2.x, b.x, progress);
-      state.y = kernel.cubic_bezier(a.y, track.path.c1.y, track.path.c2.y, b.y, progress);
+      state.x = kernel.cubic_bezier(a.x, track.path.c1.x, track.path.c2.x, b.x, position);
+      state.y = kernel.cubic_bezier(a.y, track.path.c1.y, track.path.c2.y, b.y, position);
     }
-    const presence = !aVisible ? progress : !bVisible ? 1 - progress : 1;
-    if (track.type !== 'write') state.opacity *= presence;
-    else if (presence === 0) state.opacity = 0;
+    const presence = !aVisible ? reveal : !bVisible ? 1 - reveal : 1;
+    const opacityProgress = channelProgress('opacity');
+    if (hasPropertyTiming(track, 'opacity') && (!aVisible || !bVisible)) state.opacity = kernel.interpolate(aVisible ? a.opacity : 0, bVisible ? b.opacity : 0, opacityProgress);
+    else if (track.type !== 'write') state.opacity *= !aVisible ? opacityProgress : !bVisible ? 1 - opacityProgress : 1;
+    if (track.type === 'write' && presence === 0) state.opacity = 0;
     if (track.type === 'grow' && (!aVisible || !bVisible)) { state.width *= presence; state.height *= presence; state.fontSize *= presence; }
-    return [{ object, state, ...mediaTime(object, sceneTime), writeProgress: track.type === 'write' ? (!bVisible ? 1 - progress : progress) : 1, order: track.order }];
+    return [{ object, state, ...mediaTime(object, sceneTime), writeProgress: track.type === 'write' ? (!bVisible ? 1 - reveal : reveal) : 1, order: track.order }];
   });
   return { background: scene.background, width: scene.width, height: scene.height, objects };
 }

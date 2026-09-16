@@ -411,3 +411,23 @@ test('two pictures are generated at the same time', async () => {
   const proposal = await pending;
   expect(proposal.changes.filter(change => change.path[2] === 'objects')).toHaveLength(2);
 });
+
+
+test('Responses exposes independent property timing and preserves each compiled channel', async () => {
+  const operations = [
+    { action: 'setTransitionDuration', transitionId: 'transition-1', duration: 2000 },
+    { action: 'setPropertyTiming', transitionId: 'transition-1', objectId: 'circle', channel: 'position', timing: { start: 0, duration: 2000, easing: 'linear' } },
+    { action: 'setPropertyTiming', transitionId: 'transition-1', objectId: 'circle', channel: 'opacity', timing: { start: 0, duration: 300, easing: 'easeOut' } },
+  ];
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '位置2秒、不透明度300ms', operations } });
+  const proposal = await createEditProposal(doc, { ...input, transitionId: 'transition-1' }, 'test-key-never-sent', 'test-model');
+  expect(proposal.changes).toEqual(expect.arrayContaining([
+    expect.objectContaining({ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'positionTiming'], value: { start: 0, duration: 2000, easing: 'linear' } }),
+    expect.objectContaining({ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'opacityTiming'], value: { start: 0, duration: 300, easing: 'easeOut' } }),
+  ]));
+  expect(() => validateProposalForApply(doc, proposal)).not.toThrow();
+  const body = parse.mock.calls[0][0];
+  expect(JSON.stringify(body.text.format.schema)).toContain('setPropertyTiming');
+  expect(body.input[0].content).toContain('Only modify requested channels');
+  expect(body.store).toBe(false); expect(parse).toHaveBeenCalledTimes(1);
+});

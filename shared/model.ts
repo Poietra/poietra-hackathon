@@ -47,7 +47,16 @@ export interface Composition {
   incomingTransitionId?: string;
 }
 
-export interface AnimationTrack {
+export const PROPERTY_CHANNELS = ['position', 'opacity', 'size', 'rotation', 'fill', 'stroke', 'strokeWidth', 'fontSize', 'cornerRadius', 'path', 'reveal'] as const;
+export type PropertyChannel = typeof PROPERTY_CHANNELS[number];
+export type PropertyTimingKey = `${PropertyChannel}Timing`;
+export interface AnimationTiming { start: number; duration: number; easing: Easing }
+export const PROPERTY_CHANNEL_LABELS: Record<PropertyChannel, string> = { position: 'Position', opacity: 'Opacity', size: 'Size', rotation: 'Rotation', fill: 'Fill', stroke: 'Stroke', strokeWidth: 'Stroke width', fontSize: 'Font size', cornerRadius: 'Corner radius', path: 'Shape path', reveal: 'Reveal' };
+export const propertyTimingKey = (channel: PropertyChannel): PropertyTimingKey => `${channel}Timing`;
+
+export interface AnimationTrack extends Partial<Record<PropertyTimingKey, AnimationTiming | null>> {
+  /** A materialized automatic track still follows its Transition's base timing. */
+  implicit?: boolean;
   objectId: string;
   type: AnimationKind;
   start: number;
@@ -111,6 +120,31 @@ export function defaultState(kind: ObjectKind, overrides: Partial<ObjectState> =
 
 export function defaultTrack(objectId: string, overrides: Partial<AnimationTrack> = {}): AnimationTrack {
   return { objectId, type: 'move', start: 0, duration: 800, easing: 'easeInOut', order: 'together', path: null, ...overrides };
+}
+
+
+export function getPropertyTiming(track: AnimationTrack, channel: PropertyChannel): AnimationTiming {
+  return track[propertyTimingKey(channel)] ?? { start: track.start, duration: track.duration, easing: track.easing };
+}
+export function hasPropertyTiming(track: AnimationTrack, channel: PropertyChannel): boolean { return track[propertyTimingKey(channel)] != null; }
+export function resolveTrack(track: AnimationTrack | undefined, objectId: string, duration: number): AnimationTrack {
+  return !track ? defaultTrack(objectId, { duration }) : track.implicit ? { ...track, start: 0, duration } : track;
+}
+export function implicitTracks(objectIds: string[], duration: number): Record<string, AnimationTrack> {
+  return Object.fromEntries(objectIds.map(id => [id, defaultTrack(id, { duration, implicit: true })]));
+}
+export function trackTimingEnd(track: AnimationTrack, includeBase = true): number {
+  return Math.max(includeBase ? track.start + track.duration : 0, ...PROPERTY_CHANNELS.flatMap(channel => {
+    const timing = track[propertyTimingKey(channel)]; return timing ? [timing.start + timing.duration] : [];
+  }));
+}
+/** Shared by manual edits, import, and AI. Every override uses Transition-local milliseconds. */
+export function validateAnimationTiming(timing: AnimationTiming, duration: number): void {
+  if (![timing.start, timing.duration].every(value => Number.isFinite(value) && value >= 0) || timing.start + timing.duration > duration || !['linear', 'easeInOut', 'easeIn', 'easeOut'].includes(timing.easing)) throw new Error('アニメーションの開始時刻と長さが Transition の範囲を超えています。');
+}
+export function validateAnimationTrack(track: AnimationTrack, duration: number): void {
+  validateAnimationTiming(resolveTrack(track, track.objectId, duration), duration);
+  for (const channel of PROPERTY_CHANNELS) { const timing = track[propertyTimingKey(channel)]; if (timing) validateAnimationTiming(timing, duration); }
 }
 
 export function sceneSegments(scene: Scene): Segment[] {

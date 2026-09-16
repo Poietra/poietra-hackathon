@@ -219,10 +219,15 @@ if (args.child) {
     console.log('PASS two real browser contexts converge after offline edits; local undo preserves the peer’s edit');
 
     const observer = await connect();
+    const burstStarted = Date.now();
     for (let index = 0; index < 520; index++) circle(observer.doc).set('x', 400 + index);
     circle(observer.doc).set('y', 333);
-    await expect(alice.page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('919');
-    await expect(bob.page.getByRole('spinbutton', { name: 'Position Y', exact: true })).toHaveValue('333');
+    // This burst deliberately exceeds two compactions; it tests durability,
+    // not interactive latency. Measured full UI catch-up is ~6.5s on local
+    // workerd even when a protocol peer receives all 520 updates in ~3.4s.
+    await expect(alice.page.getByRole('spinbutton', { name: 'Position X', exact: true })).toHaveValue('919', { timeout: 15000 });
+    await expect(bob.page.getByRole('spinbutton', { name: 'Position Y', exact: true })).toHaveValue('333', { timeout: 15000 });
+    console.log(`520-update burst reached both browser inspectors in ${Date.now() - burstStarted}ms`);
     const [journal] = await control('journal');
     assert.equal(journal.snapshots, 1); assert(journal.updates < 256);
     assert(journal.updates > 0, 'Exercise both compacted snapshot and uncompacted journal tail');

@@ -58,7 +58,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
   const composing = useRef(false);
   const [pathEditing, setPathEditing] = useState(false); const [zoom, setZoom] = useState(1);
   const [rightTab, setRightTab] = useState<'properties'|'assistant'>('properties'); const [shareOpen, setShareOpen] = useState(false); const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [projectOpen, setProjectOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(() => { const params = new URL(location.href).searchParams; return params.has('projects') || params.has('auth_error'); });
   useEffect(() => { if (rightTab === 'assistant' && !projectPreviewOpen) setLastReadChatId(chatMessages.at(-1)?.id); }, [rightTab, projectPreviewOpen, chatMessages]);
   const unreadChat = chatMessages.slice(chatMessages.findIndex(message => message.id === lastReadChatId) + 1).filter(message => message.authorId !== store.chatAuthorId || message.role === 'assistant').length;
   const [exportOpen, setExportOpen] = useState(false); const [copied, setCopied] = useState(false); const [name, setName] = useState(store.userName);
@@ -84,13 +84,15 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
 
   function notify(message: string) { if (toastTimer.current) clearTimeout(toastTimer.current); setToast(message); toastTimer.current = setTimeout(() => setToast(''), 4000); }
   function undo() {
-    const retained = store.undo(), objects = store.lastUndoPreservedObjects;
-    if (store.lastUndoPreservedCompositions > 0) notify(`共同編集者が使っている ${store.lastUndoPreservedCompositions} 個の新しい場面と、そのオブジェクト・動きを保持しました。`);
-    else if (objects > 0) notify(`共同編集者が変更した ${objects} 個の新規オブジェクトと、その状態・アニメーションを保持しました。`);
-    else if (store.lastUndoPreservedAudioTracks > 0) notify(`共同編集者が変更した ${store.lastUndoPreservedAudioTracks} 個の音声トラックを保持しました。`);
-    else if (retained > 0) notify(`共同編集者が変更した ${retained} 個の新規アニメーションを保持しました。`);
-    else if (store.lastUndoPreservedDurations > 0) notify('共同編集者のアニメーションが収まるように、Transition の長さを保持しました。');
-    else notify('元に戻しました');
+    try {
+      const retained = store.undo(), objects = store.lastUndoPreservedObjects;
+      if (store.lastUndoPreservedCompositions > 0) notify(`共同編集者が使っている ${store.lastUndoPreservedCompositions} 個の新しい場面と、そのオブジェクト・動きを保持しました。`);
+      else if (objects > 0) notify(`共同編集者が変更した ${objects} 個の新規オブジェクトと、その状態・アニメーションを保持しました。`);
+      else if (store.lastUndoPreservedAudioTracks > 0) notify(`共同編集者が変更した ${store.lastUndoPreservedAudioTracks} 個の音声トラックを保持しました。`);
+      else if (retained > 0) notify(`共同編集者が変更した ${retained} 個の新規アニメーションを保持しました。`);
+      else if (store.lastUndoPreservedDurations > 0) notify('共同編集者のアニメーションが収まるように、Transition の長さを保持しました。');
+      else notify('元に戻しました');
+    } catch (error) { notify(error instanceof Error ? error.message : '現在のアニメーションと競合するため、取り消せませんでした。'); }
   }
   function redo() {
     try { if (store.redo() > 0) notify('共同編集者のアニメーションが収まるように、Transition の長さを保持しました。'); else notify('やり直しました'); }
@@ -418,7 +420,7 @@ export function App({ store, kernel, renderer, exporter, createFramePainter }: {
     </div><Timeline zoom={zoom} setZoom={setZoom}><MediaTimeline key={scene.id} onAdd={addMedia} disabled={importingImage || !!mediaImport || viewingPlayback}/></Timeline></main>
     <aside ref={rightPanel} className="right-panel"><div className="inspector-tabs"><button className={rightTab==='properties'?'selected':''} onClick={() => setRightTab('properties')}><SlidersHorizontal size={13}/>Design</button><button aria-label="Chat" className={rightTab==='assistant'?'selected':''} onClick={() => setRightTab('assistant')}><MessageCircle size={13}/>Chat{unreadChat > 0 && <span className="chat-unread" aria-label={`${unreadChat} 件の未読`}>{Math.min(unreadChat, 99)}</span>}</button></div>{rightTab==='properties' && (viewingPlayback ? <PlaybackPanel scene={scene} segment={playbackSegment} playhead={playhead} onEdit={() => editMoment()}/> : <Inspector/>)}<div className="assistant-tab-content" hidden={rightTab!=='assistant'}><AssistantPanel onOpenScene={changeScene} onEditMoment={() => editMoment()}/></div></aside>
     {toast && <div className="toast" role="status"><Check size={15}/>{toast}</div>}
-    <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} project={project}/>
+    <ProjectDialog open={projectOpen} onOpenChange={setProjectOpen} project={project} roomId={store.roomId} synced={snapshot.synced}/>
     <Modal open={shareOpen} onOpenChange={setShareOpen} title="A little better, together." description="同じリンクを開けば、このプロジェクトを一緒に編集できます。"><div className="share-link"><input aria-label="共有リンク" readOnly value={location.href} onFocus={e => e.currentTarget.select()}/><button className="primary-button" onClick={share}>{copied?<Check size={14}/>:<Copy size={14}/>}<span>{copied?'Copied':'Copy link'}</span></button></div><div className="share-participants"><h3>In this project <span>{participants.length}</span></h3>{participants.map(peer=><div key={peer.clientId}><span className="avatar" style={{ background:peer.color }}>{peer.name.slice(-2).toUpperCase()}</span><span>{peer.name}</span><small>{peer.clientId===store.doc.clientID?'You':'Editing'}</small></div>)}</div><label className="name-field">表示名<input value={name} onChange={e=>setName(e.target.value)} onBlur={()=>store.setName(name)} maxLength={40}/></label><div className="share-footer"><span><Link2 size={12}/>リンクを知っている人が編集できます</span><button className="text-button" disabled={savingProject} onClick={()=>void saveProject()}><Download size={13}/>Save project</button></div></Modal>
     <Modal open={shortcutsOpen} onOpenChange={setShortcutsOpen} title="キーボードショートカット"><div className="keyboard-shortcuts">{[['Space','再生 / 停止'],['V / R / O / P','選択 / 四角 / 円 / パス'],['Drag / Shift + click','範囲選択 / 追加選択'],['↑ ↓ ← → / Shift','1 px / 10 px 移動'],['⌘ / Ctrl + C / X / V','コピー / 切り取り / 貼り付け'],['⌘ / Ctrl + ⇧V','同じ位置に貼り付け'],['⌘ / Ctrl + D','複製'],['⌘ / Ctrl + G / ⇧G','Group / Ungroup'],['⌘ / Ctrl + Z','元に戻す'],['Delete','この場面から非表示']].map(([key,action])=><div key={key}><span>{action}</span><kbd>{key}</kbd></div>)}</div></Modal>
     <ProjectPreview open={projectPreviewOpen} onOpenChange={setProjectPreviewOpen} project={project} renderer={renderer} kernel={kernel} createFramePainter={createFramePainter} onEdit={(id, next) => { changeScene(id); setRequestedSelection(next); setPlayhead(sceneSegments(store.scene(id)).find(segment => segment.id === next.id)?.start || 0); setRightTab('properties'); }}/>

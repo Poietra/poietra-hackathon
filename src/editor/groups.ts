@@ -1,4 +1,4 @@
-import { ANIMATIONS, type AnimationKind, type AnimationTrack, type Easing, type Scene, type SceneObject } from '../../shared/model';
+import { validateAnimationTrack, ANIMATIONS, type AnimationKind, type AnimationTrack, type Easing, type Scene, type SceneObject } from '../../shared/model';
 import type { Change } from '../../shared/document';
 import { visibleAnimation, type VisibleAnimation } from './animation-tracks';
 
@@ -42,13 +42,18 @@ export function groupAnimationChanges(scene: Scene, transitionId: string, select
   if (patch.order !== undefined && !['together', 'sequential'].includes(patch.order)) throw new Error('Write の順序を選択してください。');
   for (const target of targets) {
     const base = ['scenes', scene.id, 'transitions', transitionId, 'tracks', target.object.id];
-    const track = { ...target.track, ...patch };
+    const stored = transition.tracks[target.object.id];
+    const track = { ...target.track, ...patch, ...(stored?.implicit ? { implicit: false } : {}) };
     if (!target.existing && patch.start !== undefined && patch.duration === undefined) track.duration = Math.max(0, transition.duration - patch.start);
     if (![track.start, track.duration].every(value => Number.isFinite(value) && value >= 0) || track.start + track.duration > transition.duration) {
       throw new Error('開始時刻と長さが Transition の範囲を超えます。先に長さを短くするか、開始時刻を早めてください。');
     }
-    if (!target.existing) changes.push({ path: base, value: track });
-    else for (const [property, value] of Object.entries(patch)) if (value !== undefined && value !== target.track[property as keyof AnimationTrack]) changes.push({ path: [...base, property], value });
+    validateAnimationTrack(track, transition.duration);
+    if (!stored) changes.push({ path: base, value: track });
+    else {
+      if (stored.implicit) changes.push(...(['start', 'duration', 'implicit'] as const).map(property => ({ path: [...base, property], value: track[property] })));
+      for (const [property, value] of Object.entries(patch)) if (value !== undefined && value !== target.track[property as keyof AnimationTrack]) changes.push({ path: [...base, property], value });
+    }
   }
   return changes;
 }

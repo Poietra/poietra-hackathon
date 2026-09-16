@@ -108,7 +108,7 @@ test('group controls share keyboard semantics, distinguish members, and preserve
   } finally { room.close(); }
 });
 
-test('common fields apply to explicit unlocked visible targets and add a missing track without changing excluded animation', async ({ page }) => {
+test('common fields apply to unlocked visible targets and activate an automatic track without changing excluded animation', async ({ page }) => {
   const room = await fixture(page);
   try {
     const before = structuredClone(room.scene());
@@ -124,7 +124,7 @@ test('common fields apply to explicit unlocked visible targets and add a missing
     await page.getByRole('combobox', { name: 'Selected animation easing', exact: true }).selectOption('easeOut');
     await expect.poll(() => room.scene().transitions['transition-1'].tracks.sigmoid?.easing).toBe('easeOut');
     const tracks = room.scene().transitions['transition-1'].tracks;
-    expect(tracks.sigmoid).toEqual(defaultTrack('sigmoid', { start: 100, duration: 400, easing: 'easeOut' }));
+    expect(tracks.sigmoid).toEqual(defaultTrack('sigmoid', { start: 100, duration: 400, easing: 'easeOut', implicit: false }));
     expect(tracks.second).toEqual(before.transitions['transition-1'].tracks.second);
     expect(tracks.equation).toEqual({ ...before.transitions['transition-1'].tracks.equation, start: 100, duration: 400, easing: 'easeOut' });
     expect(tracks.circle).toEqual({ ...before.transitions['transition-1'].tracks.circle, start: 100, duration: 400, easing: 'easeOut' });
