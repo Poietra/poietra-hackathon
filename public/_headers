@@ -1,0 +1,11 @@
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/index.md
+  Content-Type: text/markdown; charset=utf-8
+
+/ja/index.md
+  Content-Type: text/markdown; charset=utf-8
+
+/studio/*
+  X-Robots-Tag: noindex, nofollow

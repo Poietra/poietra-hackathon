@@ -35,7 +35,7 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 
 トップページの **Open previous project（前のプロジェクトを開く）** は、このブラウザで最後に開いた部屋を再開します。[スタジオへの直接入口](https://poietra.com/studio)も利用できます。従来の `/?room=...` という共有 URL は、そのまま編集画面を開きます。トップページを見ただけでは部屋を作成せず、共同編集に接続しません。
 
-トップページは[英語](https://poietra.com/?lang=en)と[日本語](https://poietra.com/?lang=ja)に対応しています。ブラウザの優先言語から表示を選び、対応言語がない場合は英語になります。優先順位は URL の `lang` 指定 → 以前に保存した選択 → ブラウザの優先言語 → 英語です。編集画面と共有プロジェクトの内容は、この切り替えの対象には含みません。
+トップページは[英語](https://poietra.com/?lang=en)と[日本語](https://poietra.com/ja/)に対応しています。ブラウザの優先言語から表示を選び、対応言語がない場合は英語になります。優先順位は URL の `lang` 指定 → `/ja/` の明示指定 → 以前に保存した選択 → ブラウザの優先言語 → 英語です。編集画面と共有プロジェクトの内容は、この切り替えの対象には含みません。
 
 リンクを知っている人は、ログインせずに編集できます。Poietra ロゴのメニューから任意でログインすると、開いたプロジェクトが本人用の **My projects** に残ります。一覧から外しても共有リンクは残ります。Google と GitHub は現在は別アカウントで、相互の紐づけや閲覧専用権限はありません。共同編集の表示名は Share から変更できます。
 
@@ -207,6 +207,26 @@ pnpm test:core
 ```
 
 `pnpm build` は WASM の再ビルド・型検査・UI ビルドをまとめて実行します。
+
+### トップページの配信・検索対応
+
+`build:web` は英日それぞれの本文を HTML と Markdown に事前生成します。Cloudflare Worker と Node の本番サーバーが URL・`Accept-Language` から初期表示を選び、React は届いた本文に操作を接続します。編集用コードと全字形フォントは編集開始時に読み込みます。トップページ用の日本語フォントは表示文言の字形だけを含み、画像は画面幅に合う WebP を使います。
+
+公開ページには canonical・hreflang・WebApplication 構造化データを付け、`robots.txt`・`sitemap.xml`・`llms.txt` を配信します。`Accept: text/markdown` を指定した公開ページへのリクエストには、表示文言と同じ情報を Markdown で返します。編集画面・共有ルームは `noindex` にし、サイトマップに含めません。これは検索除外であり、共有リンクの参加権限を変更するものではありません。
+
+Cloudflare の [Markdown for Agents](https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/) は有料プラン向けの別機能です。この実装は Free プランでも動く静的 Markdown 配信で、Cloudflare の AI Crawl Control や Crawler Hints を自動で有効化するものではありません。AI による採用や検索順位を保証しません。
+
+```bash
+pnpm build:web
+PORT=5188 pnpm start
+# 別ターミナルで、本番ビルドの HTTP とブラウザを検証
+POIETRA_TEST_URL=http://127.0.0.1:5188 node tests/public-site-http.integration.mjs
+POIETRA_TEST_URL=http://127.0.0.1:5188 pnpm exec playwright test dogfood-home-seo dogfood-landing
+# 同じ端末・回線条件で比較するための低速回線/CPU制限付きラボ計測
+POIETRA_PERF_URL=http://127.0.0.1:5188 node scripts/measure-home.mjs
+```
+
+文言やスクリーンショットを変更した場合は `node --import tsx scripts/build-home-assets.mjs` で同梱フォント・画像を更新します。再生成時だけ FontTools/Brotli の `pyftsubset` と libwebp 対応 `ffmpeg` が必要です。通常のビルドには不要です。
 
 ## Cloudflare で動かす
 

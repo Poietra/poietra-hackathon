@@ -1,30 +1,15 @@
-export type Locale = 'en' | 'ja';
+import { resolveLocale, type Locale } from '../shared/locale';
+export { resolveLocale, type Locale } from '../shared/locale';
 
 const STORAGE_KEY = 'poietra-locale';
-const explicitLocale = (value: string | null | undefined): Locale | null => value === 'en' || value === 'ja' ? value : null;
-
-/** Explicit choices win; otherwise use the first supported browser language, then English. */
-export function resolveLocale({ query, stored, languages = [] }: {
-  query?: string | null;
-  stored?: string | null;
-  languages?: readonly string[];
-} = {}): Locale {
-  const selected = explicitLocale(query) ?? explicitLocale(stored);
-  if (selected) return selected;
-  for (const tag of languages) {
-    try {
-      const supported = explicitLocale(new Intl.Locale(tag).language);
-      if (supported) return supported;
-    } catch { /* Ignore malformed language tags and continue through the preference list. */ }
-  }
-  return 'en';
-}
 
 export function getLocale(): Locale {
   let stored: string | null = null;
   try { stored = localStorage.getItem(STORAGE_KEY); } catch { /* Storage may be disabled. */ }
+  const url = typeof location === 'undefined' ? null : new URL(location.href);
+  const query = url?.searchParams.get('lang');
   return resolveLocale({
-    query: typeof location === 'undefined' ? null : new URL(location.href).searchParams.get('lang'),
+    query: query === 'en' || query === 'ja' ? query : url && /^\/ja(?:\/|\/index\.html)?$/.test(url.pathname) ? 'ja' : null,
     stored,
     languages: typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language],
   });
