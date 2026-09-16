@@ -1,6 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
+test.use({ locale: 'ja-JP' });
+
 const ROOM = /^[a-zA-Z0-9_-]{16,80}$/;
 const newProject = (page: Page) => page.getByRole('button', { name: '新しいプロジェクト', exact: true });
 const sampleProject = (page: Page) => page.getByRole('button', { name: 'サンプルを編集', exact: true });
