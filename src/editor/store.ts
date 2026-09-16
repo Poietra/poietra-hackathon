@@ -10,6 +10,7 @@ import { ImageAssetSchema, type ImageAsset } from '../../shared/images';
 import { AudioTrackSchema, MediaAssetSchema, MediaPlaybackSchema, type AudioTrack, type MediaAsset, type MediaPlayback } from '../../shared/media';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
 import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
+import { lastRoom } from '../navigation';
 
 export interface Peer {
   clientId: number;
@@ -35,11 +36,11 @@ export function currentRoom() {
   const url = new URL(window.location.href);
   let room = url.searchParams.get('room');
   if (!room || !/^[a-zA-Z0-9_-]{16,80}$/.test(room)) {
-    room = localStorage.getItem('poietra-last-room') || crypto.randomUUID();
+    room = lastRoom() || crypto.randomUUID();
     url.searchParams.set('room', room);
     history.replaceState(null, '', url);
   }
-  localStorage.setItem('poietra-last-room', room);
+  try { localStorage.setItem('poietra-last-room', room); } catch { /* The shared URL still identifies this room when local storage is unavailable. */ }
   return room;
 }
 
