@@ -4,7 +4,6 @@ export interface LandingCopy {
   skip: string;
   home: string;
   navigation: string;
-  language: string;
   studio: string;
   features: string;
   workflow: string;
@@ -75,7 +74,6 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
     skip: 'Skip to content',
     home: 'Poietra home',
     navigation: 'Main navigation',
-    language: 'Language',
     studio: 'Studio',
     features: 'Features',
     workflow: 'How it works',
@@ -144,7 +142,6 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
     skip: '本文へ移動',
     home: 'Poietra ホーム',
     navigation: 'メインナビゲーション',
-    language: '表示言語',
     studio: 'Studio',
     features: 'できること',
     workflow: 'つくり方',

@@ -6,7 +6,6 @@ import './LandingPage.css';
 
 export interface LandingPageProps {
   locale: Locale;
-  onLocaleChange: (locale: Locale) => void;
   onStart: (template: 'blank' | 'example') => void;
   busy: 'blank' | 'example' | null;
   error: string;
@@ -52,7 +51,7 @@ function MotionStudy({ copy }: { copy: LandingCopy }) {
   </figure>;
 }
 
-export function LandingPage({ locale, onLocaleChange, onStart, busy, error, onCancel, resumeUrl }: LandingPageProps) {
+export function LandingPage({ locale, onStart, busy, error, onCancel, resumeUrl }: LandingPageProps) {
   const copy = LANDING_COPY[locale];
   return <div className="landing-page" id="top" lang={locale}>
     <a className="landing-skip" href="#landing-main">{copy.skip}</a>
@@ -60,10 +59,6 @@ export function LandingPage({ locale, onLocaleChange, onStart, busy, error, onCa
       <a className="landing-brand" href="#top" aria-label={copy.home}><img src="/poietra.svg" alt="" width="34" height="34"/><span>Poietra</span></a>
       <nav aria-label={copy.navigation}>
         <div className="landing-nav-links"><a href="#studio">{copy.studio}</a><a href="#features">{copy.features}</a><a href="#workflow">{copy.workflow}</a></div>
-        <div className="landing-languages" role="group" aria-label={copy.language}>
-          <button type="button" lang="en" aria-pressed={locale === 'en'} onClick={() => onLocaleChange('en')}>English</button>
-          <button type="button" lang="ja" aria-pressed={locale === 'ja'} onClick={() => onLocaleChange('ja')}>日本語</button>
-        </div>
         <button className="landing-nav-start" disabled={!!busy} onClick={() => onStart('blank')}>{copy.start}<ArrowUpRight size={16}/></button>
       </nav>
     </header>

@@ -30,14 +30,6 @@ export function getLocale(): Locale {
   });
 }
 
-/** A language preference belongs to this browser, never to the shared project. */
-export function setLocale(locale: Locale) {
-  try { localStorage.setItem(STORAGE_KEY, locale); } catch { /* The URL still preserves the explicit choice. */ }
-  const url = new URL(location.href);
-  url.searchParams.set('lang', locale);
-  history.replaceState(history.state, '', url);
-}
-
 export const pageCopy = {
   en: {
     description: 'Create motion together with friends and AI. Animate shapes, equations, and media in your browser. Join through a shared link, with no login required.',
