@@ -1,5 +1,4 @@
 import { DurableObject } from 'cloudflare:workers';
-import { createHash } from 'node:crypto';
 import * as Y from 'yjs';
 import * as sync from 'y-protocols/sync';
 import * as encoding from 'lib0/encoding';
@@ -9,10 +8,13 @@ import { ensureSceneAnimationTracks, ensureSceneAudioTracks, initializeDocument 
 import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, imageQuality, responseTuning, type AiRequest } from '../server/ai';
 import { presenceMessage, readPresenceUpdate, type Presence } from './presence';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
-import { IMAGE_ASSET_PATH, IMAGE_UPLOAD_PATH, IMAGE_ROOM_BYTES_LIMIT, imageDigest, imageHeaders, imageMime, readImageBody } from '../shared/images';
-import { MEDIA_ASSET_PATH, MEDIA_UPLOAD_PATH, MEDIA_ROOM_BYTES_LIMIT, MEDIA_CHUNK_BYTES, MediaUploadError, mediaResponsePlan, writeMediaChunks } from '../shared/media';
+import { IMAGE_ASSET_PATH, IMAGE_UPLOAD_PATH, imageHeaders, imageMime, readImageBody } from '../shared/images';
+import { MEDIA_ASSET_PATH, MEDIA_UPLOAD_PATH, MEDIA_CHUNK_BYTES, mediaResponsePlan } from '../shared/media';
 import { workerAuth } from './accounts';
 import { fetchPublicPage } from '../shared/public-site';
+import { assetValue, handleAssetRequest } from './assets';
+import { RoomAssets, type AssetKind } from './room-assets';
+import { uploadImageToR2, uploadMediaToR2 } from './r2-upload';
 export { AuthRecord, UserAccount } from './accounts';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
@@ -50,34 +52,8 @@ export default {
     }
     const accountResponse = await workerAuth(env).handle(request);
     if (accountResponse) return accountResponse;
-    const imageRoute = IMAGE_ASSET_PATH.exec(url.pathname) || IMAGE_UPLOAD_PATH.exec(url.pathname);
-    if (imageRoute) {
-      if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) return json({ error: 'この編集画面から画像を追加してください。' }, 403);
-      return env.ROOMS.getByName(imageRoute[1]).fetch(request);
-    }
-    const mediaRoute = MEDIA_ASSET_PATH.exec(url.pathname) || MEDIA_UPLOAD_PATH.exec(url.pathname);
-    if (mediaRoute) {
-      if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) return json({ error: 'この編集画面から音声・動画を追加してください。' }, 403);
-      if (request.method === 'POST' && request.body) {
-        // Keep ownership of the ingress stream: a DO may reject a large upload
-        // before forwarding finishes. Stop that pump before sending its response.
-        const reader = request.body.getReader();
-        let closed = false;
-        const body = new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            try {
-              if (closed) { controller.close(); return; }
-              const { value, done } = await reader.read();
-              if (done || closed) { closed = true; controller.close(); } else controller.enqueue(value);
-            } catch (error) { if (!closed) { closed = true; controller.error(error); } }
-          },
-          cancel(reason) { if (closed) return; closed = true; return reader.cancel(reason); },
-        });
-        try { return await env.ROOMS.getByName(mediaRoute[1]).fetch(new Request(request, { body })); }
-        finally { closed = true; await reader.cancel().catch(() => {}); reader.releaseLock(); }
-      }
-      return env.ROOMS.getByName(mediaRoute[1]).fetch(request);
-    }
+    const assetResponse = await handleAssetRequest(request, env);
+    if (assetResponse) return assetResponse;
     if (url.pathname.startsWith('/sync/')) {
       const roomId = url.pathname.slice('/sync/'.length);
       if (!ROOM_PATTERN.test(roomId)) return json({ error: 'Invalid room' }, 400);
@@ -104,6 +80,8 @@ export default {
 export class ProjectRoom extends DurableObject<Env> {
   private readonly doc = new Y.Doc();
   private updates = 0;
+  private readonly assets: RoomAssets;
+  private readonly promoting = new Set<string>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -117,6 +95,7 @@ export class ProjectRoom extends DurableObject<Env> {
     sql.exec('CREATE TABLE IF NOT EXISTS media_chunks (id TEXT NOT NULL, part INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (id, part))');
     // A restarted runtime has no live uploads; discard incomplete staging chunks.
     sql.exec('DELETE FROM media_chunks WHERE id NOT IN (SELECT id FROM media)');
+    this.assets = new RoomAssets(ctx, env.MEDIA_BUCKET);
     const snapshot = sql.exec<{ data: ArrayBuffer }>('SELECT data FROM snapshot WHERE id = 1').toArray()[0];
     if (snapshot) Y.applyUpdate(this.doc, new Uint8Array(snapshot.data));
     for (const row of sql.exec<{ data: ArrayBuffer }>('SELECT data FROM updates ORDER BY seq')) {
@@ -207,43 +186,22 @@ export class ProjectRoom extends DurableObject<Env> {
       if (!metadata) return json({ error: '音声・動画が見つかりません。' }, 404);
       const plan = mediaResponsePlan({ range: request.method === 'GET' ? request.headers.get('Range') : null, ifRange: request.headers.get('If-Range'), ifNoneMatch: request.headers.get('If-None-Match') }, metadata, media[2]);
       if (!plan.range || request.method === 'HEAD') return new Response(null, { status: plan.status, headers: plan.headers });
-      let offset = plan.range.start;
-      const end = plan.range.end;
-      const body = new ReadableStream<Uint8Array>({
-        pull(controller) {
-          if (offset > end) { controller.close(); return; }
-          const part = Math.floor(offset / MEDIA_CHUNK_BYTES);
-          const row = sql.exec<{ data: ArrayBuffer }>('SELECT data FROM media_chunks WHERE id = ? AND part = ?', media[2], part).toArray()[0];
-          if (!row) { controller.error(new Error('Incomplete media asset')); return; }
-          const start = offset % MEDIA_CHUNK_BYTES, bytes = new Uint8Array(row.data);
-          const chunk = bytes.subarray(start, Math.min(bytes.length, start + end - offset + 1));
-          offset += chunk.length; controller.enqueue(chunk);
-        },
-      });
-      return new Response(body, { status: plan.status, headers: plan.headers });
-    }
-    if (mediaUpload && request.method === 'POST') {
-      try { return json({ src: await this.saveMedia(mediaUpload[1], request) }); }
-      catch (error) { return json({ error: error instanceof Error ? error.message : '音声・動画を保存できませんでした。' }, error instanceof MediaUploadError ? error.status : 400); }
+      if (!sql.exec('SELECT id FROM media_chunks WHERE id = ? LIMIT 1', media[2]).toArray().length) return json({ error: '音声・動画を読み込めませんでした。再試行してください。' }, 503);
+      this.promoteLegacy(media[1], 'media', media[2], metadata.mime, metadata.size);
+      return new Response(this.legacyBody('media', media[2], plan.range.start, plan.range.end), { status: plan.status, headers: plan.headers });
     }
     if (media || mediaUpload) return json({ error: 'Method not allowed' }, 405);
     const image = IMAGE_ASSET_PATH.exec(pathname);
     if (image && (request.method === 'GET' || request.method === 'HEAD')) {
       const metadata = this.ctx.storage.sql.exec<{ mime: string; size: number }>('SELECT mime, size FROM images WHERE id = ?', image[2]).toArray()[0];
       if (!metadata) return json({ error: '画像が見つかりません。' }, 404);
-      const headers = { ...imageHeaders(metadata.mime), 'Content-Length': String(metadata.size) };
+      const headers = { ...imageHeaders(metadata.mime), 'Content-Length': String(metadata.size), ETag: `"${image[2]}"` };
       if (request.method === 'HEAD') return new Response(null, { headers });
-      const bytes = new Uint8Array(metadata.size); let offset = 0;
-      for (const row of this.ctx.storage.sql.exec<{ data: ArrayBuffer }>('SELECT data FROM image_chunks WHERE id = ? ORDER BY part', image[2])) { const chunk = new Uint8Array(row.data); bytes.set(chunk, offset); offset += chunk.length; }
-      return new Response(bytes, { headers });
+      if (!this.ctx.storage.sql.exec('SELECT id FROM image_chunks WHERE id = ? LIMIT 1', image[2]).toArray().length) return json({ error: '画像を読み込めませんでした。再試行してください。' }, 503);
+      this.promoteLegacy(image[1], 'images', image[2], metadata.mime, metadata.size);
+      return new Response(this.legacyBody('images', image[2], 0, metadata.size - 1), { headers });
     }
     const upload = IMAGE_UPLOAD_PATH.exec(pathname);
-    if (upload && request.method === 'POST') {
-      try {
-        const bytes = await readImageBody(request);
-        return json({ src: await this.saveImage(upload[1], bytes, imageMime(bytes)!) });
-      } catch (error) { return json({ error: error instanceof Error ? error.message : '画像を保存できませんでした。' }, 400); }
-    }
     if (image || upload) return json({ error: 'Method not allowed' }, 405);
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'WebSocket required' }, 426);
     if (this.ctx.getWebSockets().length >= 32) return json({ error: 'この部屋は満員です。' }, 429);
@@ -288,45 +246,63 @@ export class ProjectRoom extends DurableObject<Env> {
     }
   }
 
-  /** Content-addressed, immutable room asset; shared by uploads and AI-generated pictures. */
+  getAssetMetadata(kind: AssetKind, id: string) { return this.assets.get(kind, id); }
+  beginAssetUpload(room: string, kind: AssetKind) { return this.assets.begin(room, kind); }
+  finishAssetUpload(key: string, digest: string, mime: string, size: number) { return this.assets.finish(key, digest, mime, size); }
+  discardAssetUpload(key: string) { return this.assets.discard(key); }
+  alarm() { return this.assets.alarm(); }
+
+  /** AI-generated images use the same R2 storage and atomic room quota as uploads. */
   async saveImage(roomId: string, bytes: Uint8Array<ArrayBuffer>, mime: string): Promise<string> {
-    const id = await imageDigest(bytes);
-    this.ctx.storage.transactionSync(() => {
-      if (this.ctx.storage.sql.exec('SELECT id FROM images WHERE id = ?', id).toArray().length) return;
-      const used = this.ctx.storage.sql.exec<{ size: number }>('SELECT COALESCE(SUM(size), 0) AS size FROM images').one().size;
-      if (used + bytes.length > IMAGE_ROOM_BYTES_LIMIT) throw new Error('この部屋の画像が保存できる容量を超えました。新しいプロジェクトを作成してください。');
-      this.ctx.storage.sql.exec('INSERT INTO images (id, mime, size) VALUES (?, ?, ?)', id, mime, bytes.length);
-      for (let offset = 0, part = 0; offset < bytes.length; offset += 128 * 1024, part++) this.ctx.storage.sql.exec('INSERT INTO image_chunks (id, part, data) VALUES (?, ?, ?)', id, part, bytes.slice(offset, offset + 128 * 1024));
-    });
-    return `/api/rooms/${roomId}/images/${id}`;
+    const key = assetValue(await this.assets.begin(roomId, 'images'));
+    try {
+      const metadata = await uploadImageToR2(this.env.MEDIA_BUCKET, key, bytes, mime);
+      assetValue(this.assets.finish(key, metadata.digest, metadata.mime, metadata.size));
+      return `/api/rooms/${roomId}/images/${metadata.digest}`;
+    } finally { await this.assets.discard(key); }
   }
 
-  private async saveMedia(roomId: string, request: Request): Promise<string> {
-    const sql = this.ctx.storage.sql, temporary = crypto.randomUUID(), hash = createHash('sha256');
-    const reader = request.body?.getReader();
-    if (!reader) throw new MediaUploadError('音声・動画ファイルを選択してください。');
-    async function* chunks() {
-      while (true) { const { value, done } = await reader!.read(); if (done) return; yield value; }
-    }
-    try {
-      const metadata = await writeMediaChunks(chunks(), request.headers.get('Content-Type') ?? '', request.headers.get('Content-Length'), (chunk, part) => {
-        hash.update(chunk);
-        sql.exec('INSERT INTO media_chunks (id, part, data) VALUES (?, ?, ?)', temporary, part, chunk);
-      });
-      const digest = hash.digest('hex');
-      this.ctx.storage.transactionSync(() => {
-        if (sql.exec('SELECT id FROM media WHERE id = ?', digest).toArray().length) return;
-        const used = sql.exec<{ size: number }>('SELECT COALESCE(SUM(size), 0) AS size FROM media').one().size;
-        if (used + metadata.size > MEDIA_ROOM_BYTES_LIMIT) throw new MediaUploadError('この部屋の音声・動画は合計 128 MB までです。新しいプロジェクトを作成してください。', 413);
-        // Only completed uploads become addressable. Each row stays far below SQLite's 2 MB limit.
-        sql.exec('INSERT INTO media (id, mime, size) VALUES (?, ?, ?)', digest, metadata.mime, metadata.size);
-        sql.exec('UPDATE media_chunks SET id = ? WHERE id = ?', digest, temporary);
-      });
-      return `/api/rooms/${roomId}/media/${digest}`;
-    } finally {
-      await reader.cancel().catch(() => {}); reader.releaseLock();
-      sql.exec('DELETE FROM media_chunks WHERE id = ?', temporary);
-    }
+  private legacyBody(kind: AssetKind, digest: string, start: number, end: number): ReadableStream<Uint8Array> {
+    const sql = this.ctx.storage.sql;
+    let offset = start;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset > end) { controller.close(); return; }
+        const part = Math.floor(offset / MEDIA_CHUNK_BYTES);
+        const row = sql.exec<{ data: ArrayBuffer }>(`SELECT data FROM ${kind === 'images' ? 'image_chunks' : 'media_chunks'} WHERE id = ? AND part = ?`, digest, part).toArray()[0];
+        if (!row) { controller.error(new Error('Incomplete legacy asset')); return; }
+        const begin = offset % MEDIA_CHUNK_BYTES, bytes = new Uint8Array(row.data);
+        const chunk = bytes.subarray(begin, Math.min(bytes.length, begin + end - offset + 1));
+        if (!chunk.length) { controller.error(new Error('Incomplete legacy asset')); return; }
+        offset += chunk.length; controller.enqueue(chunk);
+      },
+    });
+  }
+
+  /** Copy on use without delaying the legacy response or sharing its stream. */
+  private promoteLegacy(room: string, kind: AssetKind, digest: string, mime: string, size: number) {
+    const token = `${kind}/${digest}`;
+    if (this.promoting.has(token) || this.assets.get(kind, digest)?.objectKey) return;
+    this.promoting.add(token);
+    this.ctx.waitUntil((async () => {
+      let key: string | undefined;
+      try {
+        key = assetValue(await this.assets.begin(room, kind));
+        const request = new Request('https://assets.internal/', { method: 'POST', headers: { 'Content-Type': mime, 'Content-Length': String(size) }, body: this.legacyBody(kind, digest, 0, size - 1) });
+        let metadata;
+        if (kind === 'images') {
+          const bytes = await readImageBody(request);
+          metadata = await uploadImageToR2(this.env.MEDIA_BUCKET, key, bytes, imageMime(bytes)!);
+        } else metadata = await uploadMediaToR2(this.env.MEDIA_BUCKET, key, request);
+        if (metadata.digest !== digest || metadata.size !== size) throw new Error('Legacy asset checksum mismatch');
+        assetValue(this.assets.finish(key, metadata.digest, metadata.mime, metadata.size));
+        // Retain old chunks during the first rollout; existing projects keep a fallback.
+      } catch { console.warn('asset_legacy_copy_retry'); }
+      finally {
+        if (key) await this.assets.discard(key);
+        this.promoting.delete(token);
+      }
+    })());
   }
 
   async propose(input: AiRequest) {

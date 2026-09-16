@@ -230,8 +230,12 @@ POIETRA_PERF_URL=http://127.0.0.1:5188 node scripts/measure-home.mjs
 
 ## Cloudflare で動かす
 
-共有環境は Cloudflare Workers に配置しています。UI・WASM・フォントを Static Assets、共同編集と素材保存を部屋ごとの SQLite Durable Object で扱います。
+共有環境は Cloudflare Workers に配置しています。UI・WASM・フォントを Static Assets、共同編集と素材の参照・容量管理を部屋ごとの SQLite Durable Object、画像・音声・動画の本体を非公開の R2 バケットで扱います。
 公開ドメインは **https://poietra.com** です。`wrangler.jsonc` の Custom Domain 設定で既存 Worker に接続し、新旧 URL で同じ部屋と素材を共有します。
+
+素材 URL は従来の `/api/rooms/{room}/images|media/{sha256}` を維持し、Worker が R2 のデータを配信します。音声・動画は Range・HEAD・ETag に対応します。新規アップロードは部屋の外でストリーミング保存し、保存が終わった参照だけを部屋に登録します。同じ素材の重複と容量上限は部屋内で確定するため、同時アップロードでも上限を超えません。
+
+旧 SQLite 素材は初回読み込み時にそのまま配信し、裏で R2 にコピーします。ハッシュとサイズを照合した後に参照を切り替え、失敗したコピーは次の読み込みで再試行します。初回の移行では旧データを残すため、既存素材を一括移行・削除した状態ではありません。部屋の同時アップロードは移行を含め 4 件までです。
 
 ### ローカルの Worker
 
@@ -243,6 +247,7 @@ pnpm dev:worker
 ```
 
 [localhost:8787](http://localhost:8787) を開きます。モデル・品質の初期設定は [wrangler.jsonc](wrangler.jsonc) にあります。
+R2 もローカルでエミュレートされ、実バケットへの接続は不要です。Node.js の `pnpm dev` は従来どおりローカルファイルへ素材を保存します。
 
 ### デプロイ
 
@@ -250,12 +255,16 @@ pnpm dev:worker
 
 ```bash
 pnpm exec wrangler login
+# 新しい環境のみ: R2 を有効化し、wrangler.jsonc と同じ名前で作成
+CLOUDFLARE_ACCOUNT_ID=YOUR_ACCOUNT_ID pnpm exec wrangler r2 bucket create poietra-assets-prod --location apac --update-config=false
+CLOUDFLARE_ACCOUNT_ID=YOUR_ACCOUNT_ID pnpm exec wrangler r2 bucket lifecycle add poietra-assets-prod abort-incomplete-room-uploads rooms/ --abort-multipart-days 1
 pnpm run deploy
 # AI を使う場合のみ、対話入力でキーを登録
 pnpm exec wrangler secret put OPENAI_API_KEY
 ```
 
 `pnpm run deploy` は UI をビルドして Worker を配置します。Rust コアを変更した場合は先に `pnpm build:wasm` を実行してください。
+本番の `poietra-assets-prod` と未完了 multipart を 1 日経過後に回収するルールは設定済みです。バケットは公開せず、`MEDIA_BUCKET` binding 経由で使います。通常の失敗・中断は直ちに後始末し、クラッシュで残った未公開オブジェクトは 15 分の予約期限後に Durable Object の alarm で回収します。未完了 multipart の回収は上記ライフサイクルが担当し、完成した素材は削除しません。
 
 ## 構成
 
@@ -268,7 +277,7 @@ UI と独立した編集データ・時間評価・描画を持ち、人間の�
 | [src/editor/](src/editor/) | 編集操作、Undo、共同編集、プロジェクトと素材の管理 |
 | [src/ui/](src/ui/) | React の編集 UI、タイムライン、プロパティ、チャット |
 | [src/engine/](src/engine/) | 時刻からの状態評価、MathJax 数式、SVG / Canvas 描画、WebGL2 Glow、WebCodecs 書き出し |
-| [worker/](worker/) | Cloudflare の API、WebSocket 同期、SQLite への保存 |
+| [worker/](worker/) | Cloudflare の API、WebSocket 同期、SQLite の編集データ・素材参照、R2 の素材本体 |
 | [server/](server/) | Node.js の開発サーバー、共通の OpenAI 呼び出しと画像処理 |
 | [tests/](tests/) | 単体テスト、ブラウザ操作、共同編集の復元、動画出力の検証 |
 
@@ -310,6 +319,7 @@ pnpm test:export         # 専用ページでのエンコード・中断・資�
 pnpm test:collaboration  # workerd の再起動・休止を含む同期と保存
 node tests/image-worker.integration.mjs  # Worker の画像保存と復元
 node tests/media-storage.integration.mjs  # Node/Worker の素材保存・容量制限・再起動
+node tests/r2-assets-worker.integration.mjs  # 実 workerd/R2 の保存先、旧素材移行、障害復旧・同時アップロード
 pnpm exec playwright test --config tests/e2e/media-export.config.ts  # 動画フレーム・音声付き出力・同期再生
 pnpm exec playwright test dogfood-custom-easing.spec.ts  # 曲線編集・共同編集・Undo・保存と再読み込み
 ```
