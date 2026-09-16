@@ -28,6 +28,16 @@ async function custom(page: Page, label: string) {
   await page.getByRole('combobox', { name: label, exact: true }).selectOption({ label: 'Custom Bézier' });
   for (const [key, value] of Object.entries(curve)) if (key !== 'type') await number(page, `${label} ${key.toUpperCase()}`, value as number);
 }
+async function dragDestination(page: Page, label: string, dx: number, dy: number) {
+  const handle = page.getByRole('button', { name: `${label} control point 1`, exact: true });
+  await handle.scrollIntoViewIfNeeded();
+  const box = (await handle.boundingBox())!, plot = (await handle.locator('..').boundingBox())!;
+  const x = box.x + box.width / 2 + dx, y = box.y + box.height / 2 + dy;
+  const round = (value: number) => Math.round(Math.max(0, Math.min(1, value)) * 1000) / 1000;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(x, y, { steps: 4 });
+  return { ...curve, x1: round((x - plot.x) / plot.width), y1: round(1 - (y - plot.y) / plot.height) };
+}
 const undo = (page: Page) => page.getByRole('button', { name: '元に戻す (⌘Z)', exact: true }).click();
 
 test('custom easing changes the rendered motion and independent opacity, then survives save and import', async ({ page }, info) => {
@@ -132,10 +142,10 @@ for (const replacement of ['preset', 'custom'] as const) test(`cancelling a drag
     await name.fill('Keep my earlier edit'); await name.press('Tab');
     await expect.poll(() => readProject(room.doc)!.name).toBe('Keep my earlier edit');
     const handle = page.getByRole('button', { name: 'Easing control point 1', exact: true });
-    await handle.scrollIntoViewIfNeeded(); const box = (await handle.boundingBox())!;
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2 - 25, { steps: 4 });
-    await expect.poll(() => room.track().easing).not.toEqual(curve);
+    const finalDrag = await dragDestination(page, 'Easing', 30, -25);
+    // The replacement must follow the final drag update causally. Seeing any
+    // earlier move packet is insufficient over a remote WebSocket connection.
+    await expect.poll(() => room.track().easing).toEqual(finalDrag);
     const peerCurve = replacement === 'preset' ? 'linear' : { ...curve, x1: .9, y1: .3 };
     applyChanges(room.doc, [{ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'easing'], value: peerCurve }], 'peer');
     if (replacement === 'preset') await expect(handle).toHaveCount(0);
@@ -155,11 +165,8 @@ test('cancelling the first independent curve drag preserves a peer edit to the n
     await select(page); await custom(page, 'Easing');
     await page.getByRole('combobox', { name: 'Animation property', exact: true }).selectOption('opacity');
     expect(room.track().opacityTiming).toBeUndefined();
-    const handle = page.getByRole('button', { name: 'Opacity animation easing control point 1', exact: true });
-    await handle.scrollIntoViewIfNeeded(); const box = (await handle.boundingBox())!;
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
-    await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2 - 25, { steps: 4 });
-    await expect.poll(() => room.track().opacityTiming?.duration).toBe(600);
+    const finalDrag = await dragDestination(page, 'Opacity animation easing', 30, -25);
+    await expect.poll(() => room.track().opacityTiming).toEqual({ start: 0, duration: 600, easing: finalDrag });
     applyChanges(room.doc, [{ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'opacityTiming', 'duration'], value: 300 }], 'peer');
     await expect(page.getByRole('spinbutton', { name: 'Opacity animation duration', exact: true })).toHaveValue('300');
     await page.keyboard.press('Escape'); await page.mouse.up();
