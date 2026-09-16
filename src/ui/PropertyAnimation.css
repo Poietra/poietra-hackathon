@@ -1,5 +1,9 @@
 .property-timing-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
 .property-timing-note { margin: 7px 0 12px; color: var(--muted, #96939f); font-size: 11px; line-height: 1.6; text-wrap: pretty; }
+/* Reserve both messages' height so creating an override does not move its curve mid-drag. */
+.property-timing-mode { display: grid; }
+.property-timing-mode > span { grid-area: 1 / 1; }
+.property-timing-mode > [aria-hidden="true"] { visibility: hidden; }
 .property-timing-reset { margin-top: 10px; }
 .property-timing-error { margin: 10px 0 0; color: #ef8078; font-size: 11px; line-height: 1.6; }
 .track-row.property-track-row { height: 32px; }

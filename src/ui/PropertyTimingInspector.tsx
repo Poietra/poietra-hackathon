@@ -53,7 +53,7 @@ export function PropertyTimingInspector({ object, transition, track }: { object:
   return <Section title="Property timing">
     <div className="property-animation-inspector">
       <Field label="Property"><select aria-label="Animation property" value={channel} onChange={event => { setChosen(event.target.value as PropertyChannel); setError(''); }}>{channels.map(value => <option key={value} value={value}>{PROPERTY_CHANNEL_LABELS[value]}{hasPropertyTiming(track, value) ? ' · 個別' : ''}</option>)}</select></Field>
-      <p className="property-timing-note">{independent ? 'この項目だけ、個別の時間で変化します。' : '共通の Timing を使用中。下の値を変えると、この項目だけ時間を分けられます。'}</p>
+      <p className="property-timing-note property-timing-mode"><span aria-hidden={!independent}>この項目だけ、個別の時間で変化します。</span><span aria-hidden={independent}>共通の Timing を使用中。下の値を変えると、この項目だけ時間を分けられます。</span></p>
       <fieldset className="property-timing-fields" disabled={object.locked || playing || viewingPlayback || !visible}>
         <Field label="Start"><NumberInput key={`${channel}/start`} value={timing.start} onChange={start => apply({ start })} label={`${label} animation start`} suffix="ms" min={0} max={transition.duration}/></Field>
         <Field label="Duration"><NumberInput key={`${channel}/duration`} value={timing.duration} onChange={duration => apply({ duration })} label={`${label} animation duration`} suffix="ms" min={0} max={Math.max(0, transition.duration - timing.start)}/></Field>
