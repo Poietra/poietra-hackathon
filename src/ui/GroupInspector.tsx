@@ -2,8 +2,9 @@ import { useRef, useState } from 'react';
 import { Group, Ungroup, MousePointer2 } from 'lucide-react';
 import { useEditor } from '../editor/context';
 import { commonTrackValue, editableGroupMembers, groupAnimationChanges, groupAnimationTargets, groupMembers, type GroupAnimationPatch } from '../editor/groups';
-import { ANIMATIONS, EASINGS, type AnimationKind, type AnimationTrack, type Easing } from '../../shared/model';
+import { ANIMATIONS, type AnimationKind, type AnimationTrack } from '../../shared/model';
 import { Field, Section } from './components';
+import { EasingEditor } from './EasingEditor';
 import './groups.css';
 
 export function GroupControls() {
@@ -37,7 +38,7 @@ function CommonNumber({ value, label, max, onCommit }: { value: number | undefin
 }
 
 export function GroupAnimationInspector() {
-  const { scene, selection, selectedIds, store, notify, viewingPlayback } = useEditor();
+  const { scene, selection, selectedIds, store, notify, viewingPlayback, playing } = useEditor();
   if (selection.kind !== 'transition') return null;
   const transition = scene.transitions[selection.id]; if (!transition) return null;
   const { targets, excluded } = groupAnimationTargets(scene, transition.id, selectedIds);
@@ -46,11 +47,11 @@ export function GroupAnimationInspector() {
   const maximumStart = Math.max(0, Math.min(transition.duration, ...targets.filter(target => target.existing).map(target => transition.duration - target.track.duration)));
   const maximumDuration = Math.max(0, Math.min(transition.duration, ...targets.map(target => transition.duration - target.track.start)));
   const commonType = commonTrackValue(targets, 'type');
-  function apply(patch: GroupAnimationPatch) {
+  function apply(patch: GroupAnimationPatch, separate = true) {
     if (viewingPlayback) return;
     try {
       const changes = groupAnimationChanges(store.scene(scene.id), transition.id, ids, patch);
-      if (changes.length) store.edit(changes);
+      if (changes.length) store.edit(changes, separate);
     } catch (failure) { notify(failure instanceof Error ? failure.message : 'アニメーションを変更できませんでした。'); }
   }
   return <div className="group-animation-inspector">
@@ -64,7 +65,7 @@ export function GroupAnimationInspector() {
         {commonType === 'write' && <Field label="Order"><select aria-label="Selected Write order" value={commonTrackValue(targets, 'order') ?? ''} onChange={event => apply({ order: event.target.value as AnimationTrack['order'] })}><option value="" disabled>Mixed</option><option value="together">Together</option><option value="sequential">Sequential</option></select></Field>}
         <Field label="Start"><CommonNumber key={`${targetKey}/start`} label="Selected animation start" value={commonTrackValue(targets, 'start')} max={maximumStart} onCommit={start => apply({ start })}/></Field>
         <Field label="Duration"><CommonNumber key={`${targetKey}/duration`} label="Selected animation duration" value={commonTrackValue(targets, 'duration')} max={maximumDuration} onCommit={duration => apply({ duration })}/></Field>
-        <Field label="Easing"><select aria-label="Selected animation easing" value={commonTrackValue(targets, 'easing') ?? ''} onChange={event => apply({ easing: event.target.value as Easing })}><option value="" disabled>Mixed</option>{Object.entries(EASINGS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+        <EasingEditor key={targetKey} value={commonTrackValue(targets, 'easing')} label="Selected animation easing" onChange={(easing, separate) => apply({ easing }, separate)} getValue={() => { const current = store.project().scenes[scene.id]; return current ? commonTrackValue(groupAnimationTargets(current, transition.id, ids).targets, 'easing') : undefined; }} disabled={!targets.length || viewingPlayback || playing || commonType === 'none'} disabledReason={commonType === 'none' ? 'Cut は瞬時に切り替わるため、イージングを使用しません。' : playing ? '再生を停止すると、イージングを調整できます。' : undefined}/>
       </fieldset>
       <p className="group-animation-explanation">変更した項目だけを反映します。位置・移動パス・プロパティごとの時間は、メンバーごとの設定を保ちます。</p>
       {commonType === 'grow' && targets.some(target => target.presence === 'both') && <p className="group-animation-explanation">Grow の拡大・縮小は Enter / Exit に適用します。両側に表示するメンバーは各場面の大きさへ変化します。</p>}

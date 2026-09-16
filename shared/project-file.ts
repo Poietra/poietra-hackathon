@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { PROPERTY_CHANNELS, propertyTimingKey, validateAnimationTrack, type Project } from './model';
 import { ImageAssetSchema } from './images';
 import { AudioTrackSchema, MediaAssetSchema, MediaPlaybackSchema } from './media';
+import { EasingSchema } from './easing-schema';
 
 export const PROJECT_FILE_LIMIT = 128 * 1024 * 1024;
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/).refine(value => !['__proto__', 'constructor', 'prototype'].includes(value));
@@ -17,7 +18,7 @@ const state = z.object({
   fontSize: z.number().min(0).max(10000), cornerRadius: z.number().min(0).max(10000),
   effect: z.enum(['none', 'glow']), path: bezier,
 });
-const timing = z.object({ start: duration, duration, easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']) });
+const timing = z.object({ start: duration, duration, easing: EasingSchema });
 const propertyTimings = Object.fromEntries(PROPERTY_CHANNELS.map(channel => [propertyTimingKey(channel), timing.nullable().optional()]));
 const composition = z.object({ id, name: z.string().max(200), duration, accent: color, states: z.record(id, state) });
 const scene = z.object({
@@ -27,7 +28,7 @@ const scene = z.object({
     .refine(object => object.kind !== 'video' || !!object.media?.mime.startsWith('video/') && !!object.playback && object.playback.offset + object.playback.duration <= object.media.duration + 1)),
   audioTracks: z.record(id, AudioTrackSchema).optional(),
   compositionOrder: z.array(id).min(1).max(100), compositions: z.record(id, composition),
-  transitions: z.record(id, z.object({ id, fromId: id, toId: id, duration, tracks: z.record(id, z.object({ ...propertyTimings, implicit: z.boolean().optional(), objectId: id, type: z.enum(['move', 'write', 'fade', 'grow', 'none']), start: duration, duration, easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']), order: z.enum(['together', 'sequential']), path: bezier.nullable() })) })),
+  transitions: z.record(id, z.object({ id, fromId: id, toId: id, duration, tracks: z.record(id, z.object({ ...propertyTimings, implicit: z.boolean().optional(), objectId: id, type: z.enum(['move', 'write', 'fade', 'grow', 'none']), start: duration, duration, easing: EasingSchema, order: z.enum(['together', 'sequential']), path: bezier.nullable() })) })),
 });
 const schema = z.object({ version: z.literal(1), name: z.string().max(100), sceneOrder: z.array(id).min(1).max(100), scenes: z.record(id, scene) });
 

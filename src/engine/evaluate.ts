@@ -1,9 +1,8 @@
 import { getPropertyTiming, hasPropertyTiming, resolveTrack, type PropertyChannel, clamp, orderedObjects, sceneSegments, type AnimationTrack, type Composition, type ObjectState, type Scene, type SceneObject, type Transition } from '../../shared/model';
-import type { MotionKernel } from './kernel';
+import { trackProgress, type MotionKernel } from './kernel';
 
 export interface RenderObject { object: SceneObject; state: ObjectState; writeProgress: number; order: 'together' | 'sequential'; videoTimeMs?: number; videoFrame?: string }
 export interface Frame { objects: RenderObject[]; background: string; width: number; height: number }
-const easingIds = { linear: 0, easeInOut: 1, easeIn: 2, easeOut: 3 };
 
 function color(from: string, to: string, t: number) {
   if (!/^#[\da-f]{6}$/i.test(from) || !/^#[\da-f]{6}$/i.test(to)) return t < 0.5 ? from : to;
@@ -43,7 +42,7 @@ export function transitionFrame(scene: Scene, transition: Transition, time: numb
     const a = fromState ?? toState!;
     const b = toState ?? fromState!;
     const track: AnimationTrack = resolveTrack(transition.tracks[object.id], object.id, transition.duration);
-    const timingProgress = (timing: Pick<AnimationTrack, 'start' | 'duration' | 'easing'>) => track.type === 'none' ? (time >= timing.start + timing.duration ? 1 : 0) : kernel.track_progress(time, timing.start, timing.duration, easingIds[timing.easing]);
+    const timingProgress = (timing: Pick<AnimationTrack, 'start' | 'duration' | 'easing'>) => track.type === 'none' ? (time >= timing.start + timing.duration ? 1 : 0) : trackProgress(kernel, time, timing.start, timing.duration, timing.easing);
     const progress = timingProgress(track);
     const channelProgress = (channel: PropertyChannel) => hasPropertyTiming(track, channel) ? timingProgress(getPropertyTiming(track, channel)) : progress;
     const position = channelProgress('position'), shapePath = channelProgress('path'), reveal = channelProgress('reveal');

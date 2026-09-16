@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { getShared, getValue, LOCAL_ORIGIN, readProject, toShared, type Change } from './document';
 import { defaultState, defaultTrack, implicitTracks, PROPERTY_CHANNELS, propertyTimingKey, resolveTrack, validateAnimationTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type SceneObject } from './model';
 import { ImageAssetSchema, type ImageAsset } from './images';
+import { CubicBezierEasingSchema, EasingSchema } from './easing-schema';
 import * as Y from 'yjs';
 
 const pathCoordinate = z.number().finite().min(-10000).max(10000);
@@ -16,8 +17,8 @@ const localReference = z.string().regex(/^@[a-zA-Z][a-zA-Z0-9_-]{0,62}$/);
 export const GENERATED_IMAGE_SIZES = { square: { width: 1024, height: 1024 }, landscape: { width: 1536, height: 1024 }, portrait: { width: 1024, height: 1536 } } as const;
 export const MAX_GENERATED_IMAGES = 2;
 const setStateOperation = z.object({ action: z.literal('setState'), compositionId: z.string(), objectId: z.string(), property: z.enum(stateProperties), value: z.union([z.number(), z.string(), z.boolean()]) });
-const setTrackOperation = z.object({ action: z.literal('setTrack'), transitionId: z.string(), objectId: z.string(), property: z.enum(['type', 'start', 'duration', 'easing', 'order']), value: z.union([z.number(), z.string()]) });
-const setPropertyTimingOperation = z.object({ action: z.literal('setPropertyTiming'), transitionId: z.string(), objectId: z.string(), channel: z.enum(PROPERTY_CHANNELS), timing: z.object({ start: z.number().finite().min(0), duration: z.number().finite().min(0), easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']) }).nullable() });
+const setTrackOperation = z.object({ action: z.literal('setTrack'), transitionId: z.string(), objectId: z.string(), property: z.enum(['type', 'start', 'duration', 'easing', 'order']), value: z.union([z.number(), z.string(), CubicBezierEasingSchema]) });
+const setPropertyTimingOperation = z.object({ action: z.literal('setPropertyTiming'), transitionId: z.string(), objectId: z.string(), channel: z.enum(PROPERTY_CHANNELS), timing: z.object({ start: z.number().finite().min(0), duration: z.number().finite().min(0), easing: EasingSchema }).nullable() });
 const setMotionPathOperation = z.object({ action: z.literal('setMotionPath'), transitionId: z.string(), objectId: z.string(), path: bezierPath.nullable() });
 const setShapePathOperation = z.object({ action: z.literal('setShapePath'), compositionId: z.string(), objectId: z.string(), path: bezierPath });
 const setCompositionDurationOperation = z.object({ action: z.literal('setCompositionDuration'), compositionId: z.string(), duration: z.number() });
@@ -353,7 +354,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
         }
       } else {
         if (operation.property === 'type') z.enum(['move', 'write', 'fade', 'grow', 'none']).parse(operation.value);
-        else if (operation.property === 'easing') z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']).parse(operation.value);
+        else if (operation.property === 'easing') EasingSchema.parse(operation.value);
         else if (operation.property === 'order') z.enum(['together', 'sequential']).parse(operation.value);
         else z.number().finite().min(0).max(entry.duration).parse(operation.value);
         Object.assign(entry.value, { [operation.property]: operation.value });
