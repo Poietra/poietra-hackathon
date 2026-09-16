@@ -1,0 +1,8 @@
+:root { font-family: Inter, 'Noto Sans JP', sans-serif; color: #cdccd8; background: #191920; color-scheme: dark; font-synthesis: none; -webkit-font-smoothing: antialiased; }
+body { margin: 0; }
+.entry-message { min-height: 100dvh; box-sizing: border-box; padding: 32px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 16px; text-align: center; }
+.entry-message img { width: 40px; height: 40px; filter: brightness(0) invert(1); }
+.entry-message h1 { font-size: 20px; font-weight: 500; margin: 8px 0 0; }
+.entry-message p { font-size: 14px; line-height: 1.8; margin: 0; }
+.entry-message button { font: inherit; color: inherit; background: #292935; border: 1px solid #8583eb; border-radius: 6px; padding: 10px 20px; cursor: pointer; }
+.entry-message button:focus-visible { outline: 2px solid #cdccd8; outline-offset: 4px; }
