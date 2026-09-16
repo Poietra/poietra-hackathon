@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 import { getShared, LOCAL_ORIGIN, readProject, toShared } from '../../shared/document';
-import { newId, type Composition, type Transition } from '../../shared/model';
+import { implicitTracks, newId, type Composition, type Transition } from '../../shared/model';
 
 function currentStructure(doc: Y.Doc, sceneId: string, compositionId: string) {
   const compositions = getShared(doc, ['scenes', sceneId, 'compositions']);
@@ -15,8 +15,8 @@ function currentStructure(doc: Y.Doc, sceneId: string, compositionId: string) {
   return { compositions, composition, order, ids, index, transitions, view: view!, rawIndex: order.toArray().indexOf(compositionId) };
 }
 
-function emptyTransition(fromId: string, toId: string): Transition {
-  return { id: newId('transition'), fromId, toId, duration: 800, tracks: {} };
+function emptyTransition(fromId: string, toId: string, objectIds: string[]): Transition {
+  return { id: newId('transition'), fromId, toId, duration: 800, tracks: implicitTracks(objectIds, 800) };
 }
 
 /** Copy one hold state and preserve the outgoing animation's identity/tracks. */
@@ -30,7 +30,7 @@ export function duplicateComposition(doc: Y.Doc, sceneId: string, compositionId:
     const nextId = current.ids[current.index + 1];
     const outgoingId = Object.values(current.view.transitions).find(value => value.fromId === compositionId && value.toId === nextId)?.id;
     const outgoing = outgoingId ? current.transitions.get(outgoingId) : undefined;
-    const transition = emptyTransition(compositionId, copy.id);
+    const transition = emptyTransition(compositionId, copy.id, Object.keys(current.view.objects));
     copy.incomingTransitionId = transition.id;
     // Prepare all nested shared values before any mutation (Yjs has no rollback).
     const copyValue = toShared(copy);
@@ -55,7 +55,7 @@ export function deleteComposition(doc: Y.Doc, sceneId: string, compositionId: st
     if (current.ids.length <= 1) throw new Error('最後の Composition は削除できません。');
     const previousId = current.ids[current.index - 1];
     const nextId = current.ids[current.index + 1];
-    const bridge = previousId && nextId ? emptyTransition(previousId, nextId) : null;
+    const bridge = previousId && nextId ? emptyTransition(previousId, nextId, Object.keys(current.view.objects)) : null;
     const bridgeValue = bridge ? toShared(bridge) : null;
     const removedTransitionIds: string[] = [];
     for (const value of Object.values(current.view.transitions)) {

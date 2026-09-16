@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getShared, getValue, LOCAL_ORIGIN, readProject, toShared, type Change } from './document';
-import { defaultState, defaultTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type SceneObject } from './model';
+import { defaultState, defaultTrack, implicitTracks, PROPERTY_CHANNELS, propertyTimingKey, resolveTrack, validateAnimationTrack, newId, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type SceneObject } from './model';
 import { ImageAssetSchema, type ImageAsset } from './images';
 import * as Y from 'yjs';
 
@@ -17,6 +17,7 @@ export const GENERATED_IMAGE_SIZES = { square: { width: 1024, height: 1024 }, la
 export const MAX_GENERATED_IMAGES = 2;
 const setStateOperation = z.object({ action: z.literal('setState'), compositionId: z.string(), objectId: z.string(), property: z.enum(stateProperties), value: z.union([z.number(), z.string(), z.boolean()]) });
 const setTrackOperation = z.object({ action: z.literal('setTrack'), transitionId: z.string(), objectId: z.string(), property: z.enum(['type', 'start', 'duration', 'easing', 'order']), value: z.union([z.number(), z.string()]) });
+const setPropertyTimingOperation = z.object({ action: z.literal('setPropertyTiming'), transitionId: z.string(), objectId: z.string(), channel: z.enum(PROPERTY_CHANNELS), timing: z.object({ start: z.number().finite().min(0), duration: z.number().finite().min(0), easing: z.enum(['linear', 'easeInOut', 'easeIn', 'easeOut']) }).nullable() });
 const setMotionPathOperation = z.object({ action: z.literal('setMotionPath'), transitionId: z.string(), objectId: z.string(), path: bezierPath.nullable() });
 const setShapePathOperation = z.object({ action: z.literal('setShapePath'), compositionId: z.string(), objectId: z.string(), path: bezierPath });
 const setCompositionDurationOperation = z.object({ action: z.literal('setCompositionDuration'), compositionId: z.string(), duration: z.number() });
@@ -29,11 +30,11 @@ const generateImageOperation = z.object({ action: z.literal('generateImage'), re
 const createImageOperation = z.object({ action: z.literal('createImage'), ref: localReference, compositionId: z.string(), name: z.string(), x: z.number(), y: z.number(), width: z.number(), height: z.number(), image: ImageAssetSchema });
 export const EditProposalSchema = z.object({
   message: z.string().max(3000),
-  operations: z.array(z.discriminatedUnion('action', [setStateOperation, setTrackOperation, setMotionPathOperation, setShapePathOperation, setCompositionDurationOperation, setTransitionDurationOperation, addObjectOperation, createObjectOperation, appendCompositionOperation, generateImageOperation])).max(100),
+  operations: z.array(z.discriminatedUnion('action', [setStateOperation, setTrackOperation, setPropertyTimingOperation, setMotionPathOperation, setShapePathOperation, setCompositionDurationOperation, setTransitionDurationOperation, addObjectOperation, createObjectOperation, appendCompositionOperation, generateImageOperation])).max(100),
 });
 const ResolvedProposalSchema = z.object({
   message: z.string().max(3000),
-  operations: z.array(z.discriminatedUnion('action', [setStateOperation, setTrackOperation, setMotionPathOperation, setShapePathOperation, setCompositionDurationOperation, setTransitionDurationOperation, addObjectOperation, createObjectOperation, appendCompositionOperation, createImageOperation])).max(100),
+  operations: z.array(z.discriminatedUnion('action', [setStateOperation, setTrackOperation, setPropertyTimingOperation, setMotionPathOperation, setShapePathOperation, setCompositionDurationOperation, setTransitionDurationOperation, addObjectOperation, createObjectOperation, appendCompositionOperation, createImageOperation])).max(100),
 });
 export type ProposalOperation = z.infer<typeof EditProposalSchema>['operations'][number];
 export type GenerateImageOperation = z.infer<typeof generateImageOperation>;
@@ -93,11 +94,7 @@ export function validateStateValue(property: string, value: unknown, kind?: Obje
   if (property === 'opacity' && (numeric < 0 || numeric > 1)) throw new Error('不透明度は 0〜1 で指定してください。');
 }
 
-function validateTrackTiming(track: Pick<AnimationTrack, 'start' | 'duration'>, duration: number) {
-  z.number().finite().min(0).max(duration).parse(track.start);
-  z.number().finite().min(0).max(duration).parse(track.duration);
-  if (track.start + track.duration > duration) throw new Error('アニメーションの開始時刻と長さが Transition の範囲を超えています。');
-}
+function validateTrackTiming(track: AnimationTrack, duration: number) { validateAnimationTrack(track, duration); }
 
 /** Check every precondition before editing; Yjs transactions do not roll back a failed batch. */
 export function validateProposalForApply(doc: Y.Doc, proposal: EditProposal): void {
@@ -259,7 +256,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
       z.number().finite().min(0).max(120000).parse(operation.duration); finalDurations.set(id, operation.duration);
       if (owns(original.transitions, id)) {
         const transition = guardTransition(id);
-        for (const objectId of Object.keys(transition.tracks)) for (const property of ['objectId', 'start', 'duration']) guard([...base, 'transitions', id, 'tracks', objectId, property]);
+        for (const objectId of Object.keys(transition.tracks)) for (const property of ['objectId', 'start', 'duration', 'implicit', ...PROPERTY_CHANNELS.map(propertyTimingKey)]) guard([...base, 'transitions', id, 'tracks', objectId, property]);
       }
     }
     if (operation.action !== 'addObject' && operation.action !== 'createObject' && operation.action !== 'createImage') continue;
@@ -293,9 +290,9 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
     if (!entry) {
       const existing = !newTransitions.has(transitionId) && owns(transition.tracks, objectId);
       const duration = finalDurations.get(transitionId) ?? transition.duration;
-      entry = { path, duration, existing, motionPathEdited: false, value: existing ? structuredClone(transition.tracks[objectId]) : defaultTrack(objectId, { duration }) };
+      entry = { path, duration, existing, motionPathEdited: false, value: transition.tracks[objectId] ? structuredClone(transition.tracks[objectId]) : defaultTrack(objectId, { duration, ...(created.has(objectId) ? { implicit: true } : {}) }) };
       tracks.set(pathKey(path), entry);
-      if (existing) for (const property of ['start', 'duration']) guard([...path, property]);
+      if (existing) for (const property of ['start', 'duration', 'implicit']) guard([...path, property]);
     }
     return { entry, transition };
   }
@@ -321,7 +318,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
       for (const [objectId, pending] of created) if (!pending.declared) states[objectId] = { ...structuredClone(pending.state), visible: pending.compositionId === id };
       const composition: Composition = { id, name: operation.name, duration: operation.duration, accent: previous.accent, states, deleted: false, incomingTransitionId: transitionId };
       scene.compositions[id] = composition; scene.compositionOrder.push(id); appended.push(id);
-      scene.transitions[transitionId] = { id: transitionId, fromId, toId: id, duration: finalDurations.get(transitionId) ?? operation.transitionDuration, tracks: {} };
+      scene.transitions[transitionId] = { id: transitionId, fromId, toId: id, duration: finalDurations.get(transitionId) ?? operation.transitionDuration, tracks: implicitTracks(Object.keys(scene.objects), finalDurations.get(transitionId) ?? operation.transitionDuration) };
       newTransitions.add(transitionId);
     } else if (operation.action === 'addObject' || operation.action === 'createObject' || operation.action === 'createImage') {
       guardComposition(operation.compositionId);
@@ -333,8 +330,21 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
       validateStateValue(operation.property, operation.value, object.kind);
       Object.assign(state, { [operation.property]: operation.value });
       if (!created.has(operation.objectId) && !appended.includes(operation.compositionId)) changes.push({ path: [...base, 'compositions', operation.compositionId, 'states', operation.objectId, operation.property], value: operation.value });
-    } else if (operation.action === 'setTrack' || operation.action === 'setMotionPath') {
+    } else if (operation.action === 'setTrack' || operation.action === 'setMotionPath' || operation.action === 'setPropertyTiming') {
       const { entry, transition } = editableTrack(operation.transitionId, operation.objectId);
+      if (operation.action === 'setPropertyTiming') {
+        // Different channels share a stable authoritative parent, so concurrent
+        // first edits never replace one another's entire track map.
+        if (!entry.existing && !created.has(operation.objectId) && !newTransitions.has(operation.transitionId)) throw new Error('アニメーションを準備しています。同期完了後にもう一度依頼してください。');
+        const key = propertyTimingKey(operation.channel);
+        entry.value[key] = operation.timing;
+        if (entry.existing) changes.push({ path: [...entry.path, key], value: operation.timing });
+      } else {
+        if (entry.value.implicit) {
+          entry.value = { ...resolveTrack(entry.value, operation.objectId, entry.duration), implicit: false };
+          if (!entry.existing) delete entry.value.implicit;
+          if (entry.existing) for (const key of ['start', 'duration', 'implicit'] as const) changes.push({ path: [...entry.path, key], value: entry.value[key] });
+        }
       if (operation.action === 'setMotionPath') {
         entry.value.path = operation.path; entry.motionPathEdited = true;
         if (entry.existing) { changes.push({ path: [...entry.path, 'path'], value: operation.path }); guard([...entry.path, 'type']); }
@@ -348,6 +358,7 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
         else z.number().finite().min(0).max(entry.duration).parse(operation.value);
         Object.assign(entry.value, { [operation.property]: operation.value });
         if (entry.existing) changes.push({ path: [...entry.path, operation.property], value: operation.value });
+      }
       }
     } else if (operation.action === 'setShapePath') {
       const object = guardObject(operation.objectId); guardComposition(operation.compositionId);
@@ -370,6 +381,10 @@ export function compileProposal(doc: Y.Doc, project: Project, sceneId: string, r
   for (const [id, pending] of created) {
     changes.push({ path: [...base, 'objects', id], value: pending.object });
     for (const compositionId of original.compositionOrder) changes.push({ path: [...base, 'compositions', compositionId, 'states', id], value: scene.compositions[compositionId].states[id] });
+    for (const transition of Object.values(original.transitions)) {
+      const path = [...base, 'transitions', transition.id, 'tracks', id];
+      if (!tracks.has(pathKey(path))) changes.push({ path, value: defaultTrack(id, { duration: finalDurations.get(transition.id) ?? transition.duration, implicit: true }) });
+    }
   }
   for (const entry of tracks.values()) {
     validateTrackTiming(entry.value, entry.duration);

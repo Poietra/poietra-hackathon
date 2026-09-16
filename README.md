@@ -16,6 +16,8 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 
 - **同じ制作物を一緒に編集** — URL で参加し、配置・動き・素材・チャットを共有。再接続時にも編集を同期します。
 - **オブジェクトごとにアニメーション** — 図形、テキスト、LaTeX 数式、ベジェ曲線、矢印、数直線、画像を扱えます。
+- **属性ごとに時間を調整** — 位置を 2 秒で移動し、透明度だけ最初の 0.3 秒で変えるなど、開始・長さ・イージングを分けられます。
+- **任意ログインと自分の一覧** — Google / GitHub の認証設定後に利用できます。ログイン中に開いたプロジェクトを自分の一覧に残し、共有リンクからはゲストも参加できます。
 - **チャットから AI に依頼** — `@codex` でオブジェクトの作成、配置や動きの変更、次の場面の追加、画像生成を頼めます。
 - **細部を手で調整** — 複数選択、整列、グループ、レイヤー操作、ベジェの移動パス、開始時刻・長さ・イージングを編集できます。
 - **音声・動画素材を取り込み** — 動画をキャンバスに配置し、音声は波形付きの専用トラックでトリミング・音量調整できます。
@@ -31,7 +33,9 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 
 例から始める場合は、Poietra ロゴのメニューから **Try the example**（ベジェ曲線と数式）か **Follow the gradient**（微分と連鎖律）を選んでください。例も新しい部屋で開き、自由に編集できます。
 
-リンクを知っている人は編集できます。アカウント登録や閲覧専用の権限はありません。表示名は Share から変更できます。
+リンクを知っている人は、ログインせずに編集できます。Poietra ロゴのメニューから任意でログインすると、開いたプロジェクトが本人用の **My projects** に残ります。一覧から外しても共有リンクは残ります。Google と GitHub は現在は別アカウントで、相互の紐づけや閲覧専用権限はありません。共同編集の表示名は Share から変更できます。
+
+ログインボタンは、運用者が各サービスの OAuth 認証を設定すると表示されます。未設定でも、ゲストの制作・共同編集・書き出しは利用できます。
 
 以前の `workers.dev` の共有リンクも利用できます。既存の部屋を `poietra.com` で開く場合は、URL の `?room=...` を残してホスト名だけ変更してください。ブラウザ内の履歴・未同期の編集はドメインごとに保存されるため、旧ドメインで同期が完了してから移動します。
 
@@ -48,6 +52,7 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 
 - Composition の **＋** は、最後の状態を複製して次の場面を追加します。
 - Transition では **Move / Write / Fade / Grow / Cut** と、開始時刻・長さ・イージングを設定できます。
+- **Property timing** で属性を選んで値を変更すると、その属性だけの開始・長さ・イージングを設定できます。例えば Transition を `2,000 ms` にして Position を `2,000 ms`、Opacity を `300 ms` に設定します。透明度の変化自体は前後の Composition の Opacity で指定します。設定済みの属性は Timeline の子行にも表示され、バーをドラッグして調整できます。**共通の時間に戻す** で全体の設定へ戻ります。
 - Move の **Edit Bézier path** から、曲線の移動パスを編集できます。
 - Scene は追加・複製・名前変更・削除・並べ替えに対応しています。
 
@@ -154,6 +159,32 @@ cp .env.example .env
 | `OPENAI_SERVICE_TIER` | `fast` | 処理の優先度。`fast` / `ultrafast` / `priority` / `flex`。`default` で送らない。モデルや契約が未対応の場合は自動で外して再送します |
 | `PORT` | `5173` | Node.js サーバーのポート |
 | `POIETRA_DATA_DIR` | `.data` | Node.js サーバーの保存先 |
+
+### Google / GitHub の任意ログインを設定する
+
+両方に対応していますが、片方だけの設定でも動作します。各サービスで OAuth アプリを登録し、Client ID と Client secret をサーバー側だけに保存します。Google は Web application、GitHub は OAuth App を使います。
+
+| サービス | 本番で登録するコールバック URL | 設定する変数 |
+| --- | --- | --- |
+| Google | `https://poietra.com/api/auth/callback/google` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| GitHub | `https://poietra.com/api/auth/callback/github` | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` |
+
+手順は [Google の Web サーバー向け OAuth ガイド](https://developers.google.com/identity/protocols/oauth2/web-server)と [GitHub の OAuth App 登録ガイド](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)を参照してください。必要な情報は本人の識別とプロフィールだけで、リポジトリへの権限やメールアドレスは求めません。
+
+ローカル Node は `.env`、ローカル Worker は `.dev.vars` に保存します。`AUTH_ORIGIN` とブラウザの URL、登録したコールバックのホスト・ポートを一致させてください。例はそれぞれ `http://localhost:5173` / `http://localhost:8787` です。本番用と開発用の OAuth アプリを分けると設定が混ざりません。
+
+Cloudflare 本番では、以下を対話入力で登録します。秘密の値をリポジトリやチャットに貼らないでください。
+
+```bash
+pnpm exec wrangler secret put GOOGLE_CLIENT_ID
+pnpm exec wrangler secret put GOOGLE_CLIENT_SECRET
+pnpm exec wrangler secret put GITHUB_CLIENT_ID
+pnpm exec wrangler secret put GITHUB_CLIENT_SECRET
+```
+
+本番の `AUTH_ORIGIN` は `https://poietra.com` です。旧 `workers.dev` ドメインではゲスト編集を継続できます。ログイン用セッションと本人用の一覧は共有ドキュメントの外に保存し、セッションは 7 日で期限切れになります。Google と GitHub は、メールアドレスなどによる自動統合をしません。
+
+認証・一覧 API と Node HTTP のテストは `pnpm exec vitest run tests/auth.test.ts tests/auth-node.test.ts`、実 Worker の保存・再起動・セッション失効は `node tests/accounts-worker.integration.mjs` で確認します。これらは外部プロバイダーの応答をテスト用に置き換えており、設定した実アカウントでのログイン確認は別です。
 
 ### ビルドと Rust コア
 

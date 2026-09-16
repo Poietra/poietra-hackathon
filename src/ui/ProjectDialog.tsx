@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Download, FilePlus2, FolderOpen, LoaderCircle, Play, Sigma } from 'lucide-react';
 import { makeBlankScene, makeDemoProject } from '../../shared/demo';
 import { newId, type Project } from '../../shared/model';
@@ -8,8 +8,10 @@ import { portableProject } from '../editor/images';
 import { createProjectRoom } from '../editor/projects';
 import { Modal } from './components';
 import { download } from './utils';
+import { AccountProjects } from './AccountProjects';
+import './ProjectDialog.css';
 
-export function ProjectDialog({ open, onOpenChange, project }: { open: boolean; onOpenChange: (open: boolean) => void; project: Project }) {
+export const ProjectDialog = memo(function ProjectDialog({ open, onOpenChange, project, roomId, synced }: { open: boolean; onOpenChange: (open: boolean) => void; project: Project; roomId: string; synced: boolean }) {
   const file = useRef<HTMLInputElement>(null);
   const controller = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,7 +45,8 @@ export function ProjectDialog({ open, onOpenChange, project }: { open: boolean; 
     const id = newId('scene');
     return { version: 1 as const, name: 'Untitled project', sceneOrder: [id], scenes: { [id]: makeBlankScene(id, 'Scene 1') } };
   }
-  return <Modal open={open} onOpenChange={onOpenChange} title="Your projects" description="新しいプロジェクトには、新しい共有リンクが作られます。">
+  return <><AccountProjects open={open} roomId={roomId} name={project.name} synced={synced} busy={busy} onOpenChange={onOpenChange}>{account => <Modal open={open} onOpenChange={onOpenChange} title="Your projects" description="新しいプロジェクトには、新しい共有リンクが作られます。" className="projects-dialog">
+    {account}
     <div className="project-actions">
       <button disabled={busy} onClick={() => void start(blank)}><FilePlus2 size={20}/><span><strong>New project</strong><small>空のキャンバスから始める</small></span></button>
       <button disabled={busy} onClick={() => void start(makeDemoProject)}><Play size={20}/><span><strong>Try the example</strong><small>ベジェ曲線と数式のアニメーション</small></span></button>
@@ -60,5 +63,5 @@ export function ProjectDialog({ open, onOpenChange, project }: { open: boolean; 
     {busy && <p className="project-progress" role="status"><LoaderCircle size={15} className="loading-spinner"/>{operation === 'save' ? '画像を含む保存ファイルを準備しています…' : 'プロジェクトを開いています…'}</p>}
     {error && <p className="project-error" role="alert">{error}</p>}
     <div className="project-save"><span>{project.name}</span><button className="subtle-button" disabled={busy} onClick={() => void save()}><Download size={14}/>Save project</button></div>
-  </Modal>;
-}
+  </Modal>}</AccountProjects></>;
+});

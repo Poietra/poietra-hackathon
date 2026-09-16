@@ -1,5 +1,5 @@
 import type { Change } from './document';
-import { newId, orderedObjects, type ObjectState, type Scene, type SceneObject } from './model';
+import { defaultTrack, newId, orderedObjects, type ObjectState, type Scene, type SceneObject } from './model';
 import { parseProjectFile } from './project-file';
 
 const OBJECT_CLIPBOARD_LIMIT = 1024 * 1024;
@@ -62,6 +62,7 @@ export function pasteObjectChanges(scene: Scene, compositionId: string, clipboar
     }
     names.add(name);
     changes.push({ path: [...base, 'objects', id], value: { ...object, id, name, groupId, order: order++, locked: false } });
+    for (const transition of Object.values(scene.transitions)) changes.push({ path: [...base, 'transitions', transition.id, 'tracks', id], value: defaultTrack(id, { duration: transition.duration, implicit: true }) });
     for (const composition of Object.values(scene.compositions)) changes.push({
       path: [...base, 'compositions', composition.id, 'states', id],
       value: { ...structuredClone(original), x: original.x + offset, y: original.y + offset, visible: composition.id === compositionId },

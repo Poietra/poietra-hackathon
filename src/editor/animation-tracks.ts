@@ -1,4 +1,4 @@
-import { defaultTrack, orderedObjects, type AnimationTrack, type Scene, type SceneObject, type Transition } from '../../shared/model';
+import { resolveTrack, orderedObjects, type AnimationTrack, type Scene, type SceneObject, type Transition } from '../../shared/model';
 
 export type AnimationPresence = 'enter' | 'exit' | 'both';
 export interface VisibleAnimation {
@@ -14,7 +14,7 @@ export function visibleAnimation(scene: Scene, transition: Transition, objectId:
   const from = !!scene.compositions[transition.fromId]?.states[objectId]?.visible;
   const to = !!scene.compositions[transition.toId]?.states[objectId]?.visible;
   if (!object || !from && !to) return null;
-  return { object, track: transition.tracks[objectId] ?? defaultTrack(objectId, { duration: transition.duration }), existing: !!transition.tracks[objectId], presence: !from ? 'enter' : !to ? 'exit' : 'both' };
+  return { object, track: resolveTrack(transition.tracks[objectId], objectId, transition.duration), existing: !!transition.tracks[objectId] && !transition.tracks[objectId].implicit, presence: !from ? 'enter' : !to ? 'exit' : 'both' };
 }
 
 export function visibleAnimations(scene: Scene, transition: Transition): VisibleAnimation[] {

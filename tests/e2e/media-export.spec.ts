@@ -1,6 +1,78 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
+test('independent 2-second position and 300-ms opacity timings survive encoded WebM frames', async ({ page }, info) => {
+  await page.goto('/');
+  const report = await page.evaluate(async () => {
+    // @ts-expect-error Vite serves source modules in this local integration harness.
+    const { exportScene } = await import('/src/engine/export.ts');
+    // @ts-expect-error Vite source module.
+    const { evaluateScene } = await import('/src/engine/evaluate.ts');
+    // @ts-expect-error Vite source module.
+    const { createFramePainter } = await import('/src/engine/painter.ts');
+    // @ts-expect-error Vite source module.
+    const { loadKernel } = await import('/src/engine/kernel.ts');
+    // @ts-expect-error Vite source module.
+    const { defaultState, defaultTrack } = await import('/shared/model.ts');
+    // @ts-expect-error Vite resolves the same decoder dependency as the application.
+    const { BlobSource, Input, ALL_FORMATS, CanvasSink } = await import('/tests/e2e/fixtures/media-dependencies.ts');
+    const from = defaultState('rectangle', { x: 50, y: 90, width: 24, height: 24, fill: '#ffffff', strokeWidth: 0, cornerRadius: 0, opacity: 0 });
+    const to = { ...structuredClone(from), x: 250, opacity: 1 };
+    const scene = {
+      id: 'property-export', name: 'Independent clocks', width: 320, height: 180, background: '#000000',
+      objects: { square: { id: 'square', name: 'Square', kind: 'rectangle', order: 0, locked: false, groupId: null } },
+      compositions: { first: { id: 'first', name: 'From', duration: 0, accent: '#ffffff', states: { square: from } }, last: { id: 'last', name: 'To', duration: 100, accent: '#ffffff', states: { square: to } } },
+      compositionOrder: ['first', 'last'], audioTracks: {},
+      transitions: { motion: { id: 'motion', fromId: 'first', toId: 'last', duration: 2000, tracks: { square: defaultTrack('square', { duration: 2000, easing: 'linear', positionTiming: { start: 0, duration: 2000, easing: 'linear' }, opacityTiming: { start: 0, duration: 300, easing: 'linear' } }) } } },
+    };
+    const kernel = await loadKernel(), canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
+    const context = canvas.getContext('2d', { willReadFrequently: true })!;
+    function measure() {
+      const pixels = context.getImageData(0, 0, 320, 180).data;
+      let mass = 0, moment = 0;
+      for (let y = 70; y < 110; y++) for (let x = 0; x < 320; x++) {
+        const brightness = pixels[(y * 320 + x) * 4];
+        if (brightness > 15) { mass += brightness; moment += (x + .5) * brightness; }
+      }
+      const x = moment / mass;
+      const interior = context.getImageData(Math.round(x) - 2, 88, 5, 5).data;
+      let brightness = 0; for (let index = 0; index < interior.length; index += 4) brightness += interior[index];
+      return { x, brightness: brightness / 25 };
+    }
+    const times = [100, 300, 1000], preview = [];
+    const painter = await createFramePainter(canvas);
+    try { for (const time of times) { await painter.render(evaluateScene(scene, time, kernel)); preview.push(measure()); } }
+    finally { painter.dispose(); }
+    const result = await exportScene(scene, kernel, { format: 'webm', fps: 30 });
+    const input = new Input({ source: new BlobSource(result.blob), formats: ALL_FORMATS });
+    try {
+      const track = await input.getPrimaryVideoTrack(); if (!track) throw new Error('Missing encoded video track');
+      const sink = new CanvasSink(track), decoded = [];
+      for (const time of times) {
+        const sample = await sink.getCanvas(time / 1000); if (!sample) throw new Error(`Missing encoded frame at ${time} ms`);
+        context.drawImage(sample.canvas, 0, 0);
+        decoded.push({ ...measure(), time, timestamp: sample.timestamp, png: canvas.toDataURL('image/png') });
+      }
+      return { preview, decoded, duration: await input.computeDuration(), bytes: Array.from(new Uint8Array(await result.blob.arrayBuffer())) };
+    } finally { input.dispose(); }
+  });
+  // These positions/brightnesses are independent numerical expectations, not another evaluator call.
+  for (const [index, x] of [60, 80, 150].entries()) {
+    const frame = report.decoded[index];
+    expect(Math.abs(frame.timestamp * 1000 - frame.time)).toBeLessThan(34);
+    expect(Math.abs(frame.x - x)).toBeLessThan(4);
+    expect(Math.abs(frame.x - report.preview[index].x)).toBeLessThan(4);
+    expect(Math.abs(frame.brightness - report.preview[index].brightness)).toBeLessThan(15);
+    await writeFile(info.outputPath(`property-${frame.time}ms.png`), Buffer.from(frame.png.split(',')[1], 'base64'));
+  }
+  expect(report.decoded[0].brightness).toBeGreaterThan(65); expect(report.decoded[0].brightness).toBeLessThan(110);
+  expect(report.decoded[1].brightness).toBeGreaterThan(235); expect(report.decoded[2].brightness).toBeGreaterThan(235);
+  expect(report.decoded[2].x - report.decoded[1].x).toBeGreaterThan(60);
+  expect(report.duration).toBeCloseTo(2.1, 1);
+  await writeFile(info.outputPath('independent-property-timing.webm'), Buffer.from(report.bytes));
+  await writeFile(info.outputPath('property-measurements.json'), JSON.stringify({ duration: report.duration, preview: report.preview, decoded: report.decoded.map(({ png: _png, ...frame }) => frame) }, null, 2));
+});
+
 for (const format of ['webm', 'mp4'] as const) test(`video frames and independent trimmed/mixed audio survive ${format} export`, async ({ page }, info) => {
   await page.goto('/');
   const report = await page.evaluate(async format => {

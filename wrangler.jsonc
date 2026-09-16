@@ -14,12 +14,16 @@
     "run_worker_first": ["/api/*", "/sync/*"]
   },
   "durable_objects": {
-    "bindings": [{ "name": "ROOMS", "class_name": "ProjectRoom" }]
+    "bindings": [{ "name": "ROOMS", "class_name": "ProjectRoom" }, { "name": "AUTH_RECORDS", "class_name": "AuthRecord" }, { "name": "USER_ACCOUNTS", "class_name": "UserAccount" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectRoom"] }],
-  "vars": { "OPENAI_MODEL": "gpt-6-astra", "OPENAI_IMAGE_MODEL": "gpt-image-1", "OPENAI_IMAGE_QUALITY": "medium", "OPENAI_REASONING_EFFORT": "medium", "OPENAI_SERVICE_TIER": "fast" },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProjectRoom"] }, { "tag": "v2-accounts", "new_sqlite_classes": ["AuthRecord", "UserAccount"] }],
+  "vars": { "AUTH_ORIGIN": "https://poietra.com", "OPENAI_MODEL": "gpt-6-astra", "OPENAI_IMAGE_MODEL": "gpt-image-1", "OPENAI_IMAGE_QUALITY": "medium", "OPENAI_REASONING_EFFORT": "medium", "OPENAI_SERVICE_TIER": "fast" },
   "observability": { "enabled": true, "head_sampling_rate": 1 },
   "ratelimits": [{
+    "name": "AUTH_LIMIT",
+    "namespace_id": "1002",
+    "simple": { "limit": 20, "period": 60 }
+  }, {
     "name": "AI_LIMIT",
     "namespace_id": "1001",
     "simple": { "limit": 6, "period": 60 }

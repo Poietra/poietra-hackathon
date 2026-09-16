@@ -1,5 +1,5 @@
 import * as Y from 'yjs';
-import type { Project } from './model';
+import { defaultTrack, type Project } from './model';
 import { projectStructureView } from './structure-view';
 
 export type Path = (string | number)[];
@@ -32,6 +32,51 @@ export function ensureSceneAudioTracks(doc: Y.Doc): boolean {
       scene.set('audioTracks', new Y.Map()); changed = true;
     }
   }, 'initialize-media');
+  return changed;
+}
+
+/** Authoritative migration before sync. Clients must never race to create an implicit track parent. */
+const animationMigrationState = new WeakMap<Y.Doc, { dirty: boolean }>();
+export function ensureSceneAnimationTracks(doc: Y.Doc): boolean {
+  let state = animationMigrationState.get(doc);
+  if (!state) {
+    state = { dirty: true }; animationMigrationState.set(doc, state);
+    const current = state, root = doc.getMap('project');
+    const observer = (events: Y.YEvent<Y.AbstractType<unknown>>[]) => {
+      for (const event of events) {
+        if (!(event instanceof Y.YMapEvent)) continue;
+        const path = event.path;
+        if ((!path.length && event.keysChanged.has('scenes')) ||
+          (path[0] === 'scenes' && (path.length === 1 ||
+            (path.length === 2 && (event.keysChanged.has('objects') || event.keysChanged.has('transitions'))) ||
+            (path.length === 3 && ['objects', 'transitions'].includes(String(path[2]))) ||
+            (path.length === 4 && path[2] === 'transitions' && event.keysChanged.has('tracks')) ||
+            (path.length === 5 && path[2] === 'transitions' && path[4] === 'tracks')))) { current.dirty = true; break; }
+      }
+    };
+    root.observeDeep(observer);
+    doc.on('destroy', () => root.unobserveDeep(observer));
+  }
+  if (!state.dirty) return false;
+  const scenes = doc.getMap('project').get('scenes');
+  if (!(scenes instanceof Y.Map)) { state.dirty = false; return false; }
+  let changed = false;
+  doc.transact(() => {
+    for (const scene of scenes.values()) {
+      if (!(scene instanceof Y.Map)) continue;
+      const objects = scene.get('objects'), transitions = scene.get('transitions');
+      if (!(objects instanceof Y.Map) || !(transitions instanceof Y.Map)) continue;
+      for (const transition of transitions.values()) {
+        if (!(transition instanceof Y.Map)) continue;
+        const tracks = transition.get('tracks'), duration = transition.get('duration');
+        if (!(tracks instanceof Y.Map) || typeof duration !== 'number') continue;
+        for (const objectId of objects.keys()) if (!tracks.has(objectId)) {
+          tracks.set(objectId, toShared(defaultTrack(objectId, { duration, implicit: true }))); changed = true;
+        }
+      }
+    }
+  }, 'initialize-animation-tracks');
+  state.dirty = false;
   return changed;
 }
 

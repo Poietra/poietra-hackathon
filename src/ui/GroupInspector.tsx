@@ -66,7 +66,7 @@ export function GroupAnimationInspector() {
         <Field label="Duration"><CommonNumber key={`${targetKey}/duration`} label="Selected animation duration" value={commonTrackValue(targets, 'duration')} max={maximumDuration} onCommit={duration => apply({ duration })}/></Field>
         <Field label="Easing"><select aria-label="Selected animation easing" value={commonTrackValue(targets, 'easing') ?? ''} onChange={event => apply({ easing: event.target.value as Easing })}><option value="" disabled>Mixed</option>{Object.entries(EASINGS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
       </fieldset>
-      <p className="group-animation-explanation">変更した項目だけを反映します。位置と移動パスはメンバーごとの設定を保ちます。</p>
+      <p className="group-animation-explanation">変更した項目だけを反映します。位置・移動パス・プロパティごとの時間は、メンバーごとの設定を保ちます。</p>
       {commonType === 'grow' && targets.some(target => target.presence === 'both') && <p className="group-animation-explanation">Grow の拡大・縮小は Enter / Exit に適用します。両側に表示するメンバーは各場面の大きさへ変化します。</p>}
       {maximumStart === 0 && targets.length > 0 && <p className="group-animation-explanation">開始を遅らせるには、先に長さを短くしてください。</p>}
     </Section>

@@ -5,12 +5,14 @@ import * as sync from 'y-protocols/sync';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { makeDemoProject } from '../shared/demo';
-import { ensureSceneAudioTracks, initializeDocument } from '../shared/document';
+import { ensureSceneAnimationTracks, ensureSceneAudioTracks, initializeDocument } from '../shared/document';
 import { AiRequestSchema, ROOM_PATTERN, aiErrorMessage, createEditProposal, imageQuality, responseTuning, type AiRequest } from '../server/ai';
 import { presenceMessage, readPresenceUpdate, type Presence } from './presence';
 import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { IMAGE_ASSET_PATH, IMAGE_UPLOAD_PATH, IMAGE_ROOM_BYTES_LIMIT, imageDigest, imageHeaders, imageMime, readImageBody } from '../shared/images';
 import { MEDIA_ASSET_PATH, MEDIA_UPLOAD_PATH, MEDIA_ROOM_BYTES_LIMIT, MEDIA_CHUNK_BYTES, MediaUploadError, mediaResponsePlan, writeMediaChunks } from '../shared/media';
+import { workerAuth } from './accounts';
+export { AuthRecord, UserAccount } from './accounts';
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
 const MAX_UPDATE_BYTES = 2 * 1024 * 1024;
@@ -39,6 +41,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/api/health') return json({ ok: true, ai: !!env.OPENAI_API_KEY });
+    if (request.method === 'GET' && /^\/api\/auth\/login\/(google|github)$/.test(url.pathname)) {
+      const { success } = await env.AUTH_LIMIT.limit({ key: request.headers.get('CF-Connecting-IP') || 'local' });
+      if (!success) return json({ error: 'ログインの試行が続いています。少し待って再試行してください。' }, 429);
+    }
+    const accountResponse = await workerAuth(env).handle(request);
+    if (accountResponse) return accountResponse;
     const imageRoute = IMAGE_ASSET_PATH.exec(url.pathname) || IMAGE_UPLOAD_PATH.exec(url.pathname);
     if (imageRoute) {
       if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) return json({ error: 'この編集画面から画像を追加してください。' }, 403);
@@ -115,7 +123,9 @@ export class ProjectRoom extends DurableObject<Env> {
       initializeDocument(this.doc, makeDemoProject());
       this.compact();
     }
-    if (ensureSceneAudioTracks(this.doc)) this.compact();
+    const migratedAudio = ensureSceneAudioTracks(this.doc);
+    const migratedAnimations = ensureSceneAnimationTracks(this.doc);
+    if (migratedAudio || migratedAnimations) this.compact();
   }
 
   private receiveUpdate(update: Uint8Array, socket: WebSocket) {
@@ -133,7 +143,9 @@ export class ProjectRoom extends DurableObject<Env> {
         this.updates++;
         // Imports from old files may introduce scenes without the audio parent.
         // Include authoritative migration updates in the snapshot before broadcasting.
-        if (ensureSceneAudioTracks(this.doc) || this.updates >= 256) this.compact();
+        const migratedAudio = ensureSceneAudioTracks(this.doc);
+        const migratedAnimations = ensureSceneAnimationTracks(this.doc);
+        if (migratedAudio || migratedAnimations || this.updates >= 256) this.compact();
       });
     } catch {
       // Discard memory if storage/application failed; it must not diverge from

@@ -44,11 +44,11 @@ test('created objects have editable automatic motion; timing materializes once, 
     await members(page, [circle]); await field(page, 'Position X', 900);
     await page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
     const transitionId = Object.keys(room.scene().transitions)[0];
-    const track = () => room.scene().transitions[transitionId].tracks[circle];
+    const track = () => { const saved = room.scene().transitions[transitionId].tracks[circle]; return saved?.implicit ? undefined : saved; };
     const row = page.locator(`[data-track-object-id="${circle}"]`);
     await expect(page.locator('.track-row')).toHaveCount(2);
     await expect(row.locator('.animation-bar')).toHaveAttribute('aria-label', 'Circle 1 Move: 0–800 ms');
-    expect(room.scene().transitions[transitionId].tracks).toEqual({});
+    expect(Object.values(room.scene().transitions[transitionId].tracks).filter(track => !track.implicit)).toEqual([]);
     await row.locator('.track-label').click();
     expect(track()).toBeUndefined(); // Selecting and seeking never materialize shared data.
     await page.getByRole('slider', { name: 'Transition preview position', exact: true }).fill('400');
@@ -64,7 +64,7 @@ test('created objects have editable automatic motion; timing materializes once, 
     await page.getByRole('slider', { name: 'Transition preview position', exact: true }).fill('600');
     await expect(page.locator(`[data-testid="stage-to"] .scene-svg [data-object-id="${circle}"]`)).toHaveAttribute('fill', '#f4ce55');
     await undo(page); await expect.poll(() => track()?.start).toBe(0);
-    expect(track().duration).toBe(400);
+    expect(track()!.duration).toBe(400);
     await undo(page); await expect.poll(() => track()).toBeUndefined();
     await expect(row.locator('.animation-bar')).toHaveAttribute('aria-label', 'Circle 1 Move: 0–800 ms');
     expect(room.scene().compositions[destination].states[circle]).toMatchObject({ x: 900, fill: '#f4ce55' });
@@ -99,7 +99,7 @@ test('multiple Japanese titles can enter and exit together with Write order and 
     await members(page, ids);
     await page.getByRole('button', { name: 'Transition 800 ms', exact: true }).click();
     const transitionId = Object.keys(room.scene().transitions)[0];
-    const tracks = () => room.scene().transitions[transitionId].tracks;
+    const tracks = () => Object.fromEntries(Object.entries(room.scene().transitions[transitionId].tracks).filter(([, track]) => !track.implicit).map(([id, { implicit, ...track }]) => [id, track]));
     await expect(page.getByRole('list', { name: 'Animation targets', exact: true })).toContainText('Enter · Move');
     await expect(page.getByRole('list', { name: 'Animation targets', exact: true }).locator('li')).toHaveCount(2);
     const type = page.getByRole('combobox', { name: 'Selected animation type', exact: true });
