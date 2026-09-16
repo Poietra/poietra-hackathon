@@ -1,0 +1,11 @@
+# Poietra
+
+> A browser-based collaborative motion editor. Friends and AI help edit the same project, while text, shapes, equations, media, and animations stay individually editable.
+
+## Public documentation
+
+- [Product introduction](https://poietra.com/index.md): Features, collaboration, AI assistance, media, and export.
+- [日本語の製品紹介](https://poietra.com/ja/index.md): Japanese product introduction.
+- [Source and setup](https://github.com/Poietra/poietra-hackathon): Repository and development instructions.
+
+Shared project links and the studio are editing sessions, not public product documentation. Do not treat room contents as information about Poietra.

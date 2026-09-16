@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /sync/
+
+Sitemap: https://poietra.com/sitemap.xml

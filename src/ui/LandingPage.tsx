@@ -86,7 +86,7 @@ export function LandingPage({ locale, onStart, busy, error, onCancel, resumeUrl 
 
       <section className="landing-product landing-container" id="studio" aria-label={copy.editorLabel}>
         <figure>
-          <div className="landing-product-frame"><img src="/studio-preview.png" alt={copy.editorAlt} width="1440" height="900" fetchPriority="high"/></div>
+          <div className="landing-product-frame"><picture><source type="image/webp" srcSet="/studio-preview-720.webp 720w, /studio-preview-1440.webp 1440w" sizes="(min-width: 1600px) 1340px, (min-width: 1296px) 1180px, (max-width: 480px) calc(100vw - 50px), (max-width: 1100px) calc(100vw - 84px), calc(100vw - 116px)"/><img src="/studio-preview.png" alt={copy.editorAlt} width="1440" height="900" fetchPriority="high" decoding="async"/></picture></div>
           <figcaption><span><span className="landing-caption-dot"/>Poietra Studio<span className="landing-caption-separator">/</span>{copy.editorCaption}</span><span>{copy.editorNote}</span></figcaption>
         </figure>
       </section>

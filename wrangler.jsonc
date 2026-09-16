@@ -10,8 +10,8 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/sync/*"]
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/", "/index.html", "/studio", "/studio/", "/studio/index.html", "/ja", "/ja/", "/ja/index.html", "/api/*", "/sync/*"]
   },
   "durable_objects": {
     "bindings": [{ "name": "ROOMS", "class_name": "ProjectRoom" }, { "name": "AUTH_RECORDS", "class_name": "AuthRecord" }, { "name": "USER_ACCOUNTS", "class_name": "UserAccount" }]

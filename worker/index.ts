@@ -12,9 +12,10 @@ import { AI_REQUEST_MAX_BYTES } from '../shared/ai-conversation';
 import { IMAGE_ASSET_PATH, IMAGE_UPLOAD_PATH, IMAGE_ROOM_BYTES_LIMIT, imageDigest, imageHeaders, imageMime, readImageBody } from '../shared/images';
 import { MEDIA_ASSET_PATH, MEDIA_UPLOAD_PATH, MEDIA_ROOM_BYTES_LIMIT, MEDIA_CHUNK_BYTES, MediaUploadError, mediaResponsePlan, writeMediaChunks } from '../shared/media';
 import { workerAuth } from './accounts';
+import { fetchPublicPage } from '../shared/public-site';
 export { AuthRecord, UserAccount } from './accounts';
 
-const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
+const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' } });
 const MAX_UPDATE_BYTES = 2 * 1024 * 1024;
 
 async function readJson(request: Request): Promise<unknown> {
@@ -40,6 +41,8 @@ async function readJson(request: Request): Promise<unknown> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const page = await fetchPublicPage(request, assetRequest => env.ASSETS.fetch(assetRequest));
+    if (page) return page;
     if (url.pathname === '/api/health') return json({ ok: true, ai: !!env.OPENAI_API_KEY });
     if (request.method === 'GET' && /^\/api\/auth\/login\/(google|github)$/.test(url.pathname)) {
       const { success } = await env.AUTH_LIMIT.limit({ key: request.headers.get('CF-Connecting-IP') || 'local' });
