@@ -3,13 +3,13 @@ import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { applyChanges, changesFor, getShared, LOCAL_ORIGIN, readProject, toShared, type Change } from '../../shared/document';
 import { makeBlankScene } from '../../shared/demo';
-import { COLORS, PROPERTY_CHANNELS, propertyTimingKey, resolveTrack, implicitTracks, trackTimingEnd, validateAnimationTiming, validateAnimationTrack, defaultState, defaultTrack, newId, type AnimationTiming, type PropertyChannel, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
+import { COLORS, PROPERTY_CHANNELS, propertyTimingKey, resolveTrack, implicitTracks, trackTimingEnd, validateAnimationTiming, validateAnimationTrack, easingsEqual, defaultState, defaultTrack, newId, type AnimationTiming, type PropertyChannel, type AnimationTrack, type Composition, type ObjectKind, type ObjectState, type Project, type Scene, type SceneObject } from '../../shared/model';
 import { applyProposal, type EditProposal } from '../../shared/ai';
 import { RoomChat } from '../../shared/chat';
 import { ImageAssetSchema, type ImageAsset } from '../../shared/images';
 import { AudioTrackSchema, MediaAssetSchema, MediaPlaybackSchema, type AudioTrack, type MediaAsset, type MediaPlayback } from '../../shared/media';
 import { copyObjects, pasteObjectChanges, type ObjectClipboard } from '../../shared/clipboard';
-import { EditorUndoManager, redoPreservingPeerDurations, undoPreservingPeerTracks } from './undo';
+import { EditorUndoManager, redoPreservingPeerDurations, rollbackGesture, undoPreservingPeerTracks } from './undo';
 import { lastRoom } from '../navigation';
 
 export interface Peer {
@@ -165,6 +165,10 @@ export class EditorStore {
     return retained;
   }
   redo() { const retained = redoPreservingPeerDurations(this.undoManager); this.refresh(); return retained; }
+  rollbackGesture(item: object) {
+    try { return rollbackGesture(this.undoManager, item); }
+    finally { this.refresh(); }
+  }
   edit(changes: Change[], separate = true) { if (separate) this.undoManager.stopCapturing(); applyChanges(this.doc, changes); if (separate) this.undoManager.stopCapturing(); }
   /** Read-only snapshot; mutations go through edit(), never through this value. */
   project() {
@@ -314,7 +318,7 @@ export class EditorStore {
     validateAnimationTrack(track, transition.duration);
     const base = ['scenes', sceneId, 'transitions', transitionId, 'tracks', objectId];
     if (!previous) this.edit([{ path: base, value: track }], separate);
-    else this.edit(changesFor(base, { ...(previous.implicit ? { start: resolved.start, duration: resolved.duration, implicit: false } : {}), ...patch }), separate);
+    else this.edit(changesFor(base, { ...(previous.implicit ? { start: resolved.start, duration: resolved.duration, implicit: false } : {}), ...patch }).filter(change => change.path.at(-1) !== 'easing' || !easingsEqual(previous.easing, patch.easing)), separate);
   }
 
   setPropertyTiming(sceneId: string, transitionId: string, objectId: string, channel: PropertyChannel, timing: AnimationTiming | null, separate = true) {
@@ -327,8 +331,12 @@ export class EditorStore {
     const track = transition.tracks[objectId];
     if (!track) throw new Error('アニメーションを準備しています。同期完了後にもう一度編集してください。');
     const key = propertyTimingKey(channel), current = track[key];
-    if ((!current && !timing) || current && timing && current.start === timing.start && current.duration === timing.duration && current.easing === timing.easing) return;
-    this.edit([{ path: ['scenes', sceneId, 'transitions', transitionId, 'tracks', objectId, key], value: timing }], separate);
+    if ((!current && !timing) || current && timing && current.start === timing.start && current.duration === timing.duration && easingsEqual(current.easing, timing.easing)) return;
+    const path = ['scenes', sceneId, 'transitions', transitionId, 'tracks', objectId, key];
+    // Existing channels keep independent fields collaborative. A timing curve
+    // itself is one value, so its four handles never merge into a hybrid curve.
+    const changes = current && timing ? changesFor(path, timing).filter(change => change.path.at(-1) !== 'easing' || !easingsEqual(current.easing, timing.easing)) : [{ path, value: timing }];
+    this.edit(changes, separate);
   }
 
   linkedIds(sceneId: string, selected: string[]) {

@@ -431,3 +431,35 @@ test('Responses exposes independent property timing and preserves each compiled 
   expect(body.input[0].content).toContain('Only modify requested channels');
   expect(body.store).toBe(false); expect(parse).toHaveBeenCalledTimes(1);
 });
+
+test('Responses strict schema exposes normalized custom easing for base and property timing', async () => {
+  const curve = { type: 'cubicBezier', x1: .25, y1: .1, x2: .25, y2: 1 };
+  parse.mockResolvedValue({ status: 'completed', output_parsed: { message: '速度カーブを調整します。', operations: [
+    { action: 'setTrack', transitionId: 'transition-1', objectId: 'circle', property: 'easing', value: curve },
+    { action: 'setPropertyTiming', transitionId: 'transition-1', objectId: 'circle', channel: 'opacity', timing: { start: 0, duration: 300, easing: curve } },
+  ] } });
+  const proposal = await createEditProposal(doc, { ...input, transitionId: 'transition-1' }, 'test-key-never-sent', 'test-model');
+  expect(proposal.changes).toEqual(expect.arrayContaining([
+    expect.objectContaining({ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'easing'], value: curve }),
+    expect.objectContaining({ path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'circle', 'opacityTiming'], value: { start: 0, duration: 300, easing: curve } }),
+  ]));
+  const body = parse.mock.calls[0][0];
+  expect(body.text.format.strict).toBe(true);
+  const nodes: Array<Record<string, unknown>> = [];
+  function visit(value: unknown) {
+    if (!value || typeof value !== 'object') return;
+    if (!Array.isArray(value)) nodes.push(value as Record<string, unknown>);
+    for (const item of Object.values(value)) visit(item);
+  }
+  visit(body.text.format.schema);
+  const curves = nodes.filter(node => (node.properties as Record<string, { const?: string }> | undefined)?.type?.const === 'cubicBezier');
+  expect(curves.length).toBeGreaterThan(0);
+  for (const schema of curves) {
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required).toEqual(expect.arrayContaining(['type', 'x1', 'y1', 'x2', 'y2']));
+    for (const key of ['x1', 'y1', 'x2', 'y2']) expect((schema.properties as Record<string, unknown>)[key]).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+  }
+  expect(body.input[0].content).toContain('not a spatial motion path');
+  expect(body.input[0].content).toContain('Existing independent channels keep their own easing');
+  expect(parse).toHaveBeenCalledTimes(1);
+});

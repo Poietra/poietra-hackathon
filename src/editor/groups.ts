@@ -1,4 +1,4 @@
-import { validateAnimationTrack, ANIMATIONS, type AnimationKind, type AnimationTrack, type Easing, type Scene, type SceneObject } from '../../shared/model';
+import { validateAnimationTrack, ANIMATIONS, easingsEqual, isValidEasing, type AnimationKind, type AnimationTrack, type Easing, type Scene, type SceneObject } from '../../shared/model';
 import type { Change } from '../../shared/document';
 import { visibleAnimation, type VisibleAnimation } from './animation-tracks';
 
@@ -38,7 +38,7 @@ export function groupAnimationChanges(scene: Scene, transitionId: string, select
   const { targets } = groupAnimationTargets(scene, transitionId, selectedIds);
   const changes: Change[] = [];
   if (patch.type !== undefined && !Object.hasOwn(ANIMATIONS, patch.type)) throw new Error('アニメーションの種類を選択してください。');
-  if (patch.easing !== undefined && !['linear', 'easeInOut', 'easeIn', 'easeOut'].includes(patch.easing)) throw new Error('Easing を選択してください。');
+  if (patch.easing !== undefined && !isValidEasing(patch.easing)) throw new Error('Easing を選択してください。');
   if (patch.order !== undefined && !['together', 'sequential'].includes(patch.order)) throw new Error('Write の順序を選択してください。');
   for (const target of targets) {
     const base = ['scenes', scene.id, 'transitions', transitionId, 'tracks', target.object.id];
@@ -52,7 +52,7 @@ export function groupAnimationChanges(scene: Scene, transitionId: string, select
     if (!stored) changes.push({ path: base, value: track });
     else {
       if (stored.implicit) changes.push(...(['start', 'duration', 'implicit'] as const).map(property => ({ path: [...base, property], value: track[property] })));
-      for (const [property, value] of Object.entries(patch)) if (value !== undefined && value !== target.track[property as keyof AnimationTrack]) changes.push({ path: [...base, property], value });
+      for (const [property, value] of Object.entries(patch)) if (value !== undefined && !(property === 'easing' ? easingsEqual(value as Easing, target.track.easing) : Object.is(value, target.track[property as keyof AnimationTrack]))) changes.push({ path: [...base, property], value });
     }
   }
   return changes;
@@ -60,5 +60,5 @@ export function groupAnimationChanges(scene: Scene, transitionId: string, select
 
 export function commonTrackValue<K extends keyof AnimationTrack>(targets: AnimationTarget[], property: K): AnimationTrack[K] | undefined {
   const first = targets[0]?.track[property];
-  return targets.every(target => Object.is(target.track[property], first)) ? first : undefined;
+  return targets.every(target => property === 'easing' ? easingsEqual(target.track.easing, first as Easing | undefined) : Object.is(target.track[property], first)) ? first : undefined;
 }

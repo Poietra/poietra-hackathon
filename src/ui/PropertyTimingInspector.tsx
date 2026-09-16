@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { RotateCcw } from 'lucide-react';
-import { EASINGS, PROPERTY_CHANNELS, PROPERTY_CHANNEL_LABELS, getPropertyTiming, hasPropertyTiming, type AnimationTiming, type AnimationTrack, type PropertyChannel, type SceneObject, type Transition } from '../../shared/model';
+import { PROPERTY_CHANNELS, PROPERTY_CHANNEL_LABELS, getPropertyTiming, hasPropertyTiming, type AnimationTiming, type AnimationTrack, type PropertyChannel, type SceneObject, type Transition } from '../../shared/model';
 import { useEditor } from '../editor/context';
 import { visibleAnimation } from '../editor/animation-tracks';
 import { Field, NumberInput, Section } from './components';
+import { EasingEditor } from './EasingEditor';
 import './PropertyAnimation.css';
 
 /** Keep imported settings reachable even when the current object/type does not use them. */
@@ -31,7 +32,7 @@ export function PropertyTimingInspector({ object, transition, track }: { object:
   const label = PROPERTY_CHANNEL_LABELS[channel];
   const [error, setError] = useState('');
 
-  function apply(patch: Partial<AnimationTiming> | null) {
+  function apply(patch: Partial<AnimationTiming> | null, separate = true) {
     if (playing || viewingPlayback) return;
     try {
       const currentScene = store.scene(scene.id);
@@ -44,7 +45,7 @@ export function PropertyTimingInspector({ object, transition, track }: { object:
         next.start = Math.max(0, Math.min(next.start, currentTransition.duration));
         next.duration = Math.max(0, Math.min(next.duration, currentTransition.duration - next.start));
       }
-      store.setPropertyTiming(scene.id, transition.id, object.id, channel, next);
+      store.setPropertyTiming(scene.id, transition.id, object.id, channel, next, separate);
       setError('');
     } catch (failure) { setError(failure instanceof Error ? failure.message : '時間を変更できませんでした。'); }
   }
@@ -56,7 +57,7 @@ export function PropertyTimingInspector({ object, transition, track }: { object:
       <fieldset className="property-timing-fields" disabled={object.locked || playing || viewingPlayback || !visible}>
         <Field label="Start"><NumberInput key={`${channel}/start`} value={timing.start} onChange={start => apply({ start })} label={`${label} animation start`} suffix="ms" min={0} max={transition.duration}/></Field>
         <Field label="Duration"><NumberInput key={`${channel}/duration`} value={timing.duration} onChange={duration => apply({ duration })} label={`${label} animation duration`} suffix="ms" min={0} max={Math.max(0, transition.duration - timing.start)}/></Field>
-        <Field label="Easing"><select aria-label={`${label} animation easing`} value={timing.easing} onChange={event => apply({ easing: event.target.value as AnimationTiming['easing'] })}>{Object.entries(EASINGS).map(([value, name]) => <option key={value} value={value}>{name}</option>)}</select></Field>
+        <EasingEditor key={`${scene.id}/${transition.id}/${object.id}/${channel}`} value={timing.easing} label={`${label} animation easing`} onChange={(easing, separate) => apply({ easing }, separate)} getValue={() => { const current = store.project().scenes[scene.id], latest = current?.transitions[transition.id]; const animation = latest && visibleAnimation(current, latest, object.id); return animation ? getPropertyTiming(animation.track, channel).easing : undefined; }} disabled={object.locked || playing || viewingPlayback || !visible || track.type === 'none'} disabledReason={track.type === 'none' ? 'Cut は瞬時に切り替わるため、イージングを使用しません。' : undefined}/>
         <button className="subtle-button full-width property-timing-reset" disabled={!independent} onClick={() => apply(null)}><RotateCcw size={13}/>共通の時間に戻す</button>
       </fieldset>
       {!visible && <p className="property-timing-note">いずれかの Composition で表示すると、動きを調整できます。</p>}

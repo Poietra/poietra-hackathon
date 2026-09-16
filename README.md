@@ -56,6 +56,7 @@ Poietra は、同じ URL を開いたメンバーがリアルタイムで共同�
 
 - Composition の **＋** は、最後の状態を複製して次の場面を追加します。
 - Transition では **Move / Write / Fade / Grow / Cut** と、開始時刻・長さ・イージングを設定できます。
+- **Easing → Custom Bézier** で、速度の変化を曲線で調整できます。2つの制御点をドラッグするか、X1・Y1・X2・Y2 を数値入力します。横軸は時間、縦軸は進行率で、いずれも `0〜1` の範囲です。共通の Timing・属性別・複数選択で利用でき、1回のドラッグは1回の Undo で戻せます。Cut にはイージングを適用しません。
 - **Property timing** で属性を選んで値を変更すると、その属性だけの開始・長さ・イージングを設定できます。例えば Transition を `2,000 ms` にして Position を `2,000 ms`、Opacity を `300 ms` に設定します。透明度の変化自体は前後の Composition の Opacity で指定します。設定済みの属性は Timeline の子行にも表示され、バーをドラッグして調整できます。**共通の時間に戻す** で全体の設定へ戻ります。
 - Move の **Edit Bézier path** から、曲線の移動パスを編集できます。
 - Scene は追加・複製・名前変更・削除・並べ替えに対応しています。
@@ -290,6 +291,7 @@ pnpm test:collaboration  # workerd の再起動・休止を含む同期と保存
 node tests/image-worker.integration.mjs  # Worker の画像保存と復元
 node tests/media-storage.integration.mjs  # Node/Worker の素材保存・容量制限・再起動
 pnpm exec playwright test --config tests/e2e/media-export.config.ts  # 動画フレーム・音声付き出力・同期再生
+pnpm exec playwright test dogfood-custom-easing.spec.ts  # 曲線編集・共同編集・Undo・保存と再読み込み
 ```
 
 描画の部品計測は通常のテストと分けて実行します。`pnpm dev` を起動し、他のテスト・ビルドを止めてから次を実行してください。生成した短い動画は終了時に削除します。

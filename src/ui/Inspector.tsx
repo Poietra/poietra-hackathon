@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { AlignHorizontalJustifyStart, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd, AlignVerticalJustifyStart, AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, Eye, EyeOff, Plus, RotateCcw, Spline, X, Copy, LockKeyhole, UnlockKeyhole, ArrowUpToLine, ArrowDownToLine } from 'lucide-react';
 import { useEditor } from '../editor/context';
-import { ANIMATIONS, EASINGS, KINDS, COLORS, defaultTrack, orderedObjects, trackTimingEnd, type AnimationKind, type Easing, type ObjectState } from '../../shared/model';
+import { ANIMATIONS, KINDS, COLORS, defaultTrack, orderedObjects, trackTimingEnd, type AnimationKind, type ObjectState } from '../../shared/model';
 import { Field, IconButton, NumberInput, Section } from './components';
 import { compositionFrame } from '../engine/evaluate';
 import { changesFor } from '../../shared/document';
@@ -9,6 +9,7 @@ import { GroupAnimationInspector, GroupControls } from './GroupInspector';
 import { TexTextarea } from './TexInput';
 import { PropertyTimingInspector } from './PropertyTimingInspector';
 import { visibleAnimation } from '../editor/animation-tracks';
+import { EasingEditor } from './EasingEditor';
 
 function ColorInput({ value, onChange, label }: { value: string; onChange: (color: string) => void; label: string }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -59,9 +60,8 @@ export function Inspector() {
     const entering = !from?.visible && !!to?.visible;
     const leaving = !!from?.visible && !to?.visible;
     const timing = object ? visibleAnimation(scene, transition, object.id)?.track ?? defaultTrack(object.id, { duration: transition.duration }) : null;
-    function setTrack(patch: Parameters<typeof store.setTrack>[3]) { if (object && canEditSelection()) store.setTrack(scene.id, transition!.id, object.id, patch); }
+    function setTrack(patch: Parameters<typeof store.setTrack>[3], separate = true) { if (object && canEditSelection()) store.setTrack(scene.id, transition!.id, object.id, patch, separate); }
     const minimumDuration = Math.max(100, ...Object.values(transition.tracks).filter(item => scene.objects[item.objectId]?.locked).map(item => trackTimingEnd(item, !item.implicit)));
-    const curves: Record<Easing, string> = { linear: 'M12 43 L184 9', easeInOut: 'M12 43 C76 43 80 9 146 9 L184 9', easeIn: 'M12 43 C130 43 164 32 184 9', easeOut: 'M12 43 C35 12 61 9 184 9' };
     return <div className="inspector-content"><div className="inspector-title"><div className="inspector-title-label"><span>{object?.name || 'Transition'}</span>{lockControl}</div><span className="inspector-kind">{object ? KINDS[object.kind] : 'Between compositions'}</span></div><GroupControls/>{lockNote}<fieldset className="inspector-fields" disabled={lockedSelection}>
       <Section title="Transition"><Field label="Duration"><NumberInput value={transition.duration} onChange={value => { if (canEditSelection()) store.setTransitionDuration(scene.id, transition.id, value); }} label="Transition duration" suffix="ms" min={minimumDuration} max={120000}/></Field></Section>
       {object && timing ? <>
@@ -73,8 +73,7 @@ export function Inspector() {
         <Section title="Timing">
           <Field label="Start"><NumberInput value={timing.start} onChange={start => setTrack({ start, duration: Math.min(timing.duration, transition.duration - start) })} label="Animation start" suffix="ms" min={0} max={Math.max(0, transition.duration - 1)}/></Field>
           <Field label="Duration"><NumberInput value={timing.duration} onChange={duration => setTrack({ duration })} label="Animation duration" suffix="ms" min={0} max={transition.duration - timing.start}/></Field>
-          <Field label="Easing"><select aria-label="Easing" value={timing.easing} onChange={e => setTrack({ easing: e.target.value as Easing })}>{Object.entries(EASINGS).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
-          <div className="easing-graph"><svg viewBox="0 0 196 54" aria-label={EASINGS[timing.easing]}><path d={curves[timing.easing]} fill="none" stroke="#aaa8c0" strokeWidth="1.4"/></svg></div>
+          <EasingEditor key={`${scene.id}/${transition.id}/${object.id}`} value={timing.easing} label="Easing" onChange={(easing, separate) => setTrack({ easing }, separate)} getValue={() => { const current = store.project().scenes[scene.id], latest = current?.transitions[transition.id]; return latest ? visibleAnimation(current, latest, object.id)?.track.easing : undefined; }} disabled={lockedSelection || editor.playing || editor.viewingPlayback || timing.type === 'none'} disabledReason={timing.type === 'none' ? 'Cut は瞬時に切り替わるため、イージングを使用しません。' : editor.playing ? '再生を停止すると、イージングを調整できます。' : undefined}/>
         </Section>
         <PropertyTimingInspector key={`${scene.id}/${transition.id}/${object.id}`} object={object} transition={transition} track={timing}/>
         {timing.type === 'move' && from?.visible && to?.visible && <Section title="Motion path"><button className={`subtle-button full-width ${editor.pathEditing ? 'active' : ''}`} onClick={() => { if (!timing.path) setTrack({ path: { c1: { x: from.x + (to.x - from.x) / 3, y: from.y }, c2: { x: from.x + (to.x - from.x) * 2 / 3, y: to.y } } }); editor.setPathEditing(!editor.pathEditing); }}><Spline size={15}/>{editor.pathEditing ? 'Finish editing path' : 'Edit Bézier path'}</button>{timing.path && <button className="text-button" onClick={() => { setTrack({ path: null }); editor.setPathEditing(false); }}>Use a straight path</button>}</Section>}

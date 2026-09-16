@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
-test('independent 2-second position and 300-ms opacity timings survive encoded WebM frames', async ({ page }, info) => {
+for (const easing of ['linear', 'custom'] as const) test(`independent 2-second position and 300-ms opacity with ${easing} easing survive encoded WebM frames`, async ({ page }, info) => {
   await page.goto('/');
-  const report = await page.evaluate(async () => {
+  const report = await page.evaluate(async easing => {
     // @ts-expect-error Vite serves source modules in this local integration harness.
     const { exportScene } = await import('/src/engine/export.ts');
     // @ts-expect-error Vite source module.
@@ -18,12 +18,13 @@ test('independent 2-second position and 300-ms opacity timings survive encoded W
     const { BlobSource, Input, ALL_FORMATS, CanvasSink } = await import('/tests/e2e/fixtures/media-dependencies.ts');
     const from = defaultState('rectangle', { x: 50, y: 90, width: 24, height: 24, fill: '#ffffff', strokeWidth: 0, cornerRadius: 0, opacity: 0 });
     const to = { ...structuredClone(from), x: 250, opacity: 1 };
+    const curve = easing === 'custom' ? { type: 'cubicBezier', x1: 0, y1: 0, x2: 0, y2: 1 } : 'linear';
     const scene = {
       id: 'property-export', name: 'Independent clocks', width: 320, height: 180, background: '#000000',
       objects: { square: { id: 'square', name: 'Square', kind: 'rectangle', order: 0, locked: false, groupId: null } },
       compositions: { first: { id: 'first', name: 'From', duration: 0, accent: '#ffffff', states: { square: from } }, last: { id: 'last', name: 'To', duration: 100, accent: '#ffffff', states: { square: to } } },
       compositionOrder: ['first', 'last'], audioTracks: {},
-      transitions: { motion: { id: 'motion', fromId: 'first', toId: 'last', duration: 2000, tracks: { square: defaultTrack('square', { duration: 2000, easing: 'linear', positionTiming: { start: 0, duration: 2000, easing: 'linear' }, opacityTiming: { start: 0, duration: 300, easing: 'linear' } }) } } },
+      transitions: { motion: { id: 'motion', fromId: 'first', toId: 'last', duration: 2000, tracks: { square: defaultTrack('square', { duration: 2000, easing: 'linear', positionTiming: { start: 0, duration: 2000, easing: curve }, opacityTiming: { start: 0, duration: 300, easing: curve } }) } } },
     };
     const kernel = await loadKernel(), canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
     const context = canvas.getContext('2d', { willReadFrequently: true })!;
@@ -55,9 +56,10 @@ test('independent 2-second position and 300-ms opacity timings survive encoded W
       }
       return { preview, decoded, duration: await input.computeDuration(), bytes: Array.from(new Uint8Array(await result.blob.arrayBuffer())) };
     } finally { input.dispose(); }
-  });
+  }, easing);
   // These positions/brightnesses are independent numerical expectations, not another evaluator call.
-  for (const [index, x] of [60, 80, 150].entries()) {
+  const progress = (time: number) => { const t = Math.cbrt(time); return easing === 'custom' ? 3 * t * t - 2 * t * t * t : time; };
+  for (const [index, x] of [100, 300, 1000].map(time => 50 + 200 * progress(time / 2000)).entries()) {
     const frame = report.decoded[index];
     expect(Math.abs(frame.timestamp * 1000 - frame.time)).toBeLessThan(34);
     expect(Math.abs(frame.x - x)).toBeLessThan(4);
@@ -65,7 +67,7 @@ test('independent 2-second position and 300-ms opacity timings survive encoded W
     expect(Math.abs(frame.brightness - report.preview[index].brightness)).toBeLessThan(15);
     await writeFile(info.outputPath(`property-${frame.time}ms.png`), Buffer.from(frame.png.split(',')[1], 'base64'));
   }
-  expect(report.decoded[0].brightness).toBeGreaterThan(65); expect(report.decoded[0].brightness).toBeLessThan(110);
+  expect(Math.abs(report.decoded[0].brightness - 255 * progress(1 / 3))).toBeLessThan(25);
   expect(report.decoded[1].brightness).toBeGreaterThan(235); expect(report.decoded[2].brightness).toBeGreaterThan(235);
   expect(report.decoded[2].x - report.decoded[1].x).toBeGreaterThan(60);
   expect(report.duration).toBeCloseTo(2.1, 1);

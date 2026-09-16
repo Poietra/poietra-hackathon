@@ -1,7 +1,8 @@
 import type { ImageAsset } from './images';
 import type { AudioTrack, MediaAsset, MediaPlayback } from './media';
+import { isValidEasing, type Easing, type PresetEasing } from './easing';
+export { DEFAULT_CUSTOM_EASING, isValidEasing, easingsEqual, type PresetEasing, type CubicBezierEasing, type Easing } from './easing';
 export type ObjectKind = 'circle' | 'rectangle' | 'text' | 'equation' | 'path' | 'arrow' | 'numberline' | 'image' | 'video';
-export type Easing = 'linear' | 'easeInOut' | 'easeIn' | 'easeOut';
 export type AnimationKind = 'move' | 'write' | 'fade' | 'grow' | 'none';
 export type Point = { x: number; y: number };
 export type Bezier = { c1: Point; c2: Point };
@@ -101,7 +102,7 @@ export type Segment = { kind: Selection['kind']; id: string; start: number; dura
 
 export const COLORS = ['#d7d8e4', '#67c4d9', '#f4ce55', '#b5d396', '#ef8078', '#d5a3bd', '#8a8fe9', '#ffffff'];
 export const KINDS: Record<ObjectKind, string> = { circle: 'Circle', rectangle: 'Rectangle', text: 'Text', equation: 'Equation', path: 'Path', arrow: 'Arrow', numberline: 'Number line', image: 'Image', video: 'Video' };
-export const EASINGS: Record<Easing, string> = { linear: 'Linear', easeInOut: 'Ease in out', easeIn: 'Ease in', easeOut: 'Ease out' };
+export const EASINGS: Record<PresetEasing, string> = { linear: 'Linear', easeInOut: 'Ease in out', easeIn: 'Ease in', easeOut: 'Ease out' };
 export const ANIMATIONS: Record<AnimationKind, string> = { move: 'Move', write: 'Write', fade: 'Fade', grow: 'Grow', none: 'Cut' };
 
 export function newId(prefix = 'obj') { return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`; }
@@ -140,7 +141,8 @@ export function trackTimingEnd(track: AnimationTrack, includeBase = true): numbe
 }
 /** Shared by manual edits, import, and AI. Every override uses Transition-local milliseconds. */
 export function validateAnimationTiming(timing: AnimationTiming, duration: number): void {
-  if (![timing.start, timing.duration].every(value => Number.isFinite(value) && value >= 0) || timing.start + timing.duration > duration || !['linear', 'easeInOut', 'easeIn', 'easeOut'].includes(timing.easing)) throw new Error('アニメーションの開始時刻と長さが Transition の範囲を超えています。');
+  if (![timing.start, timing.duration].every(value => Number.isFinite(value) && value >= 0) || timing.start + timing.duration > duration) throw new Error('アニメーションの開始時刻と長さが Transition の範囲を超えています。');
+  if (!isValidEasing(timing.easing)) throw new Error('イージングの形式が無効です。ベジェ曲線の制御点は 0〜1 で指定してください。');
 }
 export function validateAnimationTrack(track: AnimationTrack, duration: number): void {
   validateAnimationTiming(resolveTrack(track, track.objectId, duration), duration);

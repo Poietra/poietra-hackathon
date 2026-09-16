@@ -48,6 +48,7 @@ const kernel: MotionKernel = {
   interpolate: (a, b, progress) => a + (b - a) * progress,
   track_progress: (time, start, duration) => Math.max(0, Math.min(1, (time - start) / duration)),
   cubic_bezier: (a, b, c, d, t) => (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t ** 2 * c + t ** 3 * d,
+  cubic_bezier_ease: () => { throw new Error('Custom easing requires the real WASM fixture.'); },
 };
 
 function scene(duration = 100): Scene {

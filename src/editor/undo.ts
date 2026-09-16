@@ -5,6 +5,7 @@ import { PROPERTY_CHANNELS, propertyTimingKey } from '../../shared/model';
 export class EditorUndoManager extends Y.UndoManager {
   readonly peerEditedAudioTracks = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedTracks = new WeakSet<Y.Map<unknown>>();
+  readonly peerEditedTimings = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedActivations = new WeakMap<Y.Map<unknown>, WeakSet<Y.Item>>();
   readonly peerEditedObjects = new WeakSet<Y.Map<unknown>>();
   readonly peerEditedCompositions = new WeakSet<Y.Map<unknown>>();
@@ -54,6 +55,11 @@ export class EditorUndoManager extends Y.UndoManager {
           const value = values.get(id);
           if (collection === 'tracks' && value instanceof Y.Map) {
             this.peerEditedTracks.add(value);
+            const timingKeys = path.length > 6 ? [path[6]] : path.length === 6 ? changedKeys : PROPERTY_CHANNELS.map(propertyTimingKey);
+            for (const channel of PROPERTY_CHANNELS) {
+              const key = propertyTimingKey(channel), timing = value.get(key);
+              if (timingKeys.includes(key) && timing instanceof Y.Map) this.peerEditedTimings.add(timing);
+            }
             // Remember the particular activation, not merely this long-lived
             // automatic parent. Initial sync and earlier implicit edits must
             // not protect an unrelated later first base edit from Undo.
@@ -93,6 +99,7 @@ function sharedCreations(manager: EditorUndoManager) {
   const containers = new Set<Y.Map<unknown>>();
   const protectedTracks = new Set<Y.Map<unknown>>();
   const activatedTracks = new Set<Y.Map<unknown>>();
+  const timingParents = new Map<Y.Map<unknown>, Set<string>>();
   const protectedObjects = new Set<Y.Map<unknown>>();
   const dependentTracks = new Set<Y.Map<unknown>>();
   const protectedCompositions = new Set<Y.Map<unknown>>();
@@ -146,6 +153,15 @@ function sharedCreations(manager: EditorUndoManager) {
       if (!(tracks instanceof Y.Map) || !tracks._item || Y.isDeleted(action.insertions, tracks._item.id)) continue;
       for (const track of tracks.values()) {
         if (!(track instanceof Y.Map)) continue;
+        if (!added(track)) for (const channel of PROPERTY_CHANNELS) {
+          const key = propertyTimingKey(channel), timing = track.get(key);
+          // Keep a newly independent channel only when a peer used that exact
+          // parent. Other channels/base edits must not protect its creation.
+          if (timing instanceof Y.Map && added(timing) && manager.peerEditedTimings.has(timing) && fieldAfterUndo(manager, action, track, key) == null) {
+            const keys = timingParents.get(track) ?? new Set<string>(); keys.add(key); timingParents.set(track, keys);
+            roots.add(timing); dependentTracks.add(track); protectedTracks.add(track);
+          }
+        }
         const activation = track._map.get('implicit');
         const promoted = track.get('implicit') === false && fieldAfterUndo(manager, action, track, 'implicit') === true && !!activation && manager.peerEditedActivations.get(track)?.has(activation);
         if (promoted) activatedTracks.add(track);
@@ -203,7 +219,7 @@ function sharedCreations(manager: EditorUndoManager) {
       if (source instanceof Y.Map && !added(source) && source.get('deleted') !== true && fieldAfterUndo(manager, action, source, 'deleted') === true) revivedCompositions.add(source);
     }
   }
-  return { roots, containers, activatedTracks, audioTracks: protectedAudioTracks.size, dependentTracks, orderEntries, revivedCompositions, compositions: protectedCompositions.size, tracks: [...protectedTracks].filter(track => track.get('implicit') !== true || PROPERTY_CHANNELS.some(channel => track.get(propertyTimingKey(channel)) != null)).length, objects: protectedObjects.size };
+  return { roots, containers, activatedTracks, timingParents, audioTracks: protectedAudioTracks.size, dependentTracks, orderEntries, revivedCompositions, compositions: protectedCompositions.size, tracks: [...protectedTracks].filter(track => track.get('implicit') !== true || PROPERTY_CHANNELS.some(channel => track.get(propertyTimingKey(channel)) != null)).length, objects: protectedObjects.size };
 }
 
 type UndoAction = EditorUndoManager['undoStack'][number];
@@ -247,15 +263,16 @@ function fieldAfterStep(manager: EditorUndoManager, action: UndoAction, map: Y.M
   if (item?.deleted && Y.isDeleted(action.deletions, item.id) && !Y.isDeleted(action.insertions, item.id)) return item.content.getContent()[0];
   return fieldAfterUndo(manager, action, map, key);
 }
-function projectedTrackEnd(manager: EditorUndoManager, action: UndoAction, track: Y.Map<unknown>, retained = false): number {
-  const field = (map: Y.Map<unknown>, key: string) => retained ? map.get(key) : fieldAfterStep(manager, action, map, key);
+function projectedTrackEnd(manager: EditorUndoManager, action: UndoAction, track: Y.Map<unknown>, retained = false, retainedTimings?: Set<Y.Map<unknown>>): number {
+  const field = (map: Y.Map<unknown>, key: string) => retained || retainedTimings?.has(map) ? map.get(key) : fieldAfterStep(manager, action, map, key);
   const end = (map: Y.Map<unknown>) => {
     const start = field(map, 'start'), duration = field(map, 'duration');
     return typeof start === 'number' && typeof duration === 'number' ? start + duration : 0;
   };
   let maximum = field(track, 'implicit') === true ? 0 : end(track);
   for (const channel of PROPERTY_CHANNELS) {
-    const timing = field(track, propertyTimingKey(channel));
+    const current = track.get(propertyTimingKey(channel));
+    const timing = current instanceof Y.Map && retainedTimings?.has(current) ? current : field(track, propertyTimingKey(channel));
     if (timing instanceof Y.Map) maximum = Math.max(maximum, end(timing));
   }
   return maximum;
@@ -273,7 +290,7 @@ function requiredDurations(manager: EditorUndoManager, creations: ReturnType<typ
       if (typeof duration !== 'number') continue;
       for (const track of tracks.values()) {
         if (!(track instanceof Y.Map) || !creations.dependentTracks.has(track) && !manager.retainedCreationTracks.has(track) && !manager.peerEditedTracks.has(track)) continue;
-        if (projectedTrackEnd(manager, action, track, creations.roots.has(track)) > duration) protectedDurations.add(transition);
+        if (projectedTrackEnd(manager, action, track, creations.roots.has(track), creations.roots) > duration) protectedDurations.add(transition);
       }
     }
   }
@@ -296,7 +313,7 @@ function assertRestoredTracksFit(manager: EditorUndoManager, action: UndoAction,
       for (const key of tracks._map.keys()) {
         const current = tracks.get(key);
         const track = current instanceof Y.Map && retainedTracks.has(current) ? current : fieldAfterStep(manager, action, tracks, key);
-        if (track instanceof Y.Map && projectedTrackEnd(manager, action, track, retainedTracks.has(track)) > duration) {
+        if (track instanceof Y.Map && projectedTrackEnd(manager, action, track, retainedTracks.has(track), retainedTracks) > duration) {
           throw new Error(direction === 'undo' ? 'この時間設定は復元できません。現在の長さに合わせて改めて編集してください。' : '共同編集者が Transition を短くしたため、このアニメーションをやり直せません。現在の長さに合わせて改めて編集してください。');
         }
       }
@@ -311,6 +328,9 @@ function protectedStep(manager: EditorUndoManager, direction: 'undo' | 'redo', c
   // Existing automatic parents have old base fields to restore. Preserve the
   // activated track exactly when a peer has since edited that activation.
   omitted.push(...[...creations.activatedTracks].flatMap(track => [...track._map.keys()].flatMap(key => fieldHistory(track, key))));
+  // A reset channel stores null. Do not restore that old null over the shared
+  // timing map before deleteFilter has a chance to retain its complete subtree.
+  omitted.push(...[...creations.timingParents].flatMap(([track, keys]) => [...keys].flatMap(key => fieldHistory(track, key))));
   omitted.push(...[...creations.revivedCompositions].flatMap(composition => fieldHistory(composition, 'deleted')));
   if (omitted.length) action.deletions = withoutItems(previousDeletions, omitted);
   const priorFilter = manager.deleteFilter;
@@ -370,9 +390,34 @@ export function undoPreservingPeerTracks(manager: EditorUndoManager): number {
   return 0;
 }
 
+/** Cancel only the active gesture, even when a peer superseded all its edits. */
+export function rollbackGesture(manager: EditorUndoManager, expected: object): boolean {
+  if (manager.undoStack.at(-1) !== expected) return false;
+  // Normal Undo deliberately skips empty items. A canceled gesture must never
+  // reach an older action, so hide that history until protected Undo returns.
+  const earlier = manager.undoStack.splice(0, manager.undoStack.length - 1);
+  const earlierRedo = manager.redoStack.splice(0);
+  let completed = false;
+  try {
+    undoPreservingPeerTracks(manager);
+    completed = true;
+    return true;
+  } finally {
+    manager.undoStack.unshift(...earlier);
+    try {
+      // The reverted drag is not a user-requested Undo and must not be Redoable.
+      // Preserve any unrelated Redo entries that existed before cancellation.
+      if (completed) manager.clear(false, true);
+    } finally {
+      manager.redoStack.unshift(...earlierRedo);
+      manager.stopCapturing();
+    }
+  }
+}
+
 /** Redo normally unless a shorter duration would truncate a peer's animation. */
 export function redoPreservingPeerDurations(manager: EditorUndoManager): number {
-  const creations = { roots: new Set<Y.Map<unknown>>(), activatedTracks: new Set<Y.Map<unknown>>(), containers: new Set<Y.Map<unknown>>(), audioTracks: 0, dependentTracks: new Set<Y.Map<unknown>>(), orderEntries: new Map<Y.Array<unknown>, Set<string>>(), revivedCompositions: new Set<Y.Map<unknown>>(), objects: 0, tracks: 0, compositions: 0 };
+  const creations = { roots: new Set<Y.Map<unknown>>(), activatedTracks: new Set<Y.Map<unknown>>(), timingParents: new Map<Y.Map<unknown>, Set<string>>(), containers: new Set<Y.Map<unknown>>(), audioTracks: 0, dependentTracks: new Set<Y.Map<unknown>>(), orderEntries: new Map<Y.Array<unknown>, Set<string>>(), revivedCompositions: new Set<Y.Map<unknown>>(), objects: 0, tracks: 0, compositions: 0 };
   while (manager.canRedo()) {
     const action = manager.redoStack.at(-1)!;
     const durations = requiredDurations(manager, creations, action);
