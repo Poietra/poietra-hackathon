@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { defaultTrack } from '../../shared/model';
 
 // These are explicit API stubs. No real model call or API key is involved in this suite.
 const positionProposal = (x: number, expected = 245, message = '円の位置を調整しました。') => ({
@@ -138,6 +139,8 @@ test('an AI proposal that generated a picture adds an image object which renders
     { path: ['scenes', 'scene-1', 'objects', 'obj_ai_star'], value: { id: 'obj_ai_star', name: 'AI star', kind: 'image', image: { src, width: 1536, height: 1024 }, order: 9, locked: false, groupId: null }, expected: null, existed: false },
     { path: ['scenes', 'scene-1', 'compositions', 'comp-1', 'states', 'obj_ai_star'], value: state(true), expected: null, existed: false },
     { path: ['scenes', 'scene-1', 'compositions', 'comp-2', 'states', 'obj_ai_star'], value: state(false), expected: null, existed: false },
+    // Match compileProposal: an object and its implicit animation parents are one local edit.
+    { path: ['scenes', 'scene-1', 'transitions', 'transition-1', 'tracks', 'obj_ai_star'], value: defaultTrack('obj_ai_star', { duration: 800, implicit: true }), expected: null, existed: false },
   ] }));
   await send(page, '星のイラストを右上に追加して');
   await page.getByRole('button', { name: 'Apply edits' }).click();

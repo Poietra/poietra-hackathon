@@ -1,14 +1,17 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ArrowUp, Check, ChevronRight, LoaderCircle, MessageCircle, Sparkles, X } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ArrowDown, ArrowUp, Check, ChevronRight, MessageCircle, Sparkles, X } from 'lucide-react';
 import { useEditor } from '../editor/context';
 import { proposalTargets, type ProposalTarget } from '../editor/ai-targets';
 import { validateProposalForApply, type EditProposal } from '../../shared/ai';
 import { chatHistory, codexPrompt, type ChatMessage as Message, type ChatScope } from '../../shared/chat';
 import { LOCAL_ORIGIN } from '../../shared/document';
+import { ChatThinking } from './ChatThinking';
+import { cn } from './utils';
+import './AssistantPanel.css';
 
 interface PendingRequest { controller: AbortController; scope: ChatScope; prompt: string; messageId: string }
 
-export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sceneId: string) => void; onEditMoment: () => void }) {
+export function AssistantPanel({ isActive, onOpenScene, onEditMoment }: { isActive: boolean; onOpenScene: (sceneId: string) => void; onEditMoment: () => void }) {
   const editor = useEditor();
   const chat = editor.store.chat;
   const messages = useSyncExternalStore(chat.subscribe, chat.snapshot);
@@ -17,7 +20,10 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
   const [available, setAvailable] = useState<boolean | null>(null); const [error, setError] = useState('');
   const [retry, setRetry] = useState<{ prompt: string; messageId: string } | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
-  const bottom = useRef<HTMLDivElement>(null); const request = useRef<PendingRequest | null>(null);
+  const messageList = useRef<HTMLDivElement>(null); const request = useRef<PendingRequest | null>(null);
+  const followLatest = useRef(true);
+  const lastMessageId = useRef<string | undefined>(undefined);
+  const [hasNewMessages, setHasNewMessages] = useState(false);
   const currentScene = useRef(editor.scene.id); currentScene.current = editor.scene.id;
   const appliedIds = useRef(new Set<string>());
   const drafts = useRef(new Map<string, string>());
@@ -30,6 +36,21 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
 
   useEffect(() => {
     let active = true; let checking = false; const health = new AbortController();
+    const cancelRequest = () => {
+      const running = request.current;
+      if (!running) return;
+      request.current = null;
+      running.controller.abort();
+      chat.patch(running.messageId, { status: 'cancelled' });
+      return running;
+    };
+    // A browser navigation does not guarantee a React unmount. Mark the request
+    // stopped before its abandoned fetch can report a misleading network failure.
+    const leavePage = () => {
+      const running = cancelRequest();
+      if (running) { setPending(null); restoreDraft(running); }
+    };
+    window.addEventListener('pagehide', leavePage);
     const check = async () => {
       if (checking) return; checking = true;
       try {
@@ -40,13 +61,23 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
       finally { checking = false; }
     };
     void check(); const timer = setInterval(check, 15000);
-    return () => { active = false; clearInterval(timer); health.abort(); if (request.current) { request.current.controller.abort(); chat.patch(request.current.messageId, { status: 'cancelled' }); } request.current = null; };
+    return () => { active = false; clearInterval(timer); health.abort(); window.removeEventListener('pagehide', leavePage); cancelRequest(); };
   }, []);
   useEffect(() => {
     if (!editor.store.snapshot().synced) return;
     for (const message of messages) if (message.authorId === editor.store.chatAuthorId && message.status === 'pending' && message.id !== request.current?.messageId && !editor.peers.some(peer => peer.clientId === message.requestClientId)) chat.patch(message.id, { status: 'cancelled' });
   }, [messages, chat, editor.store, editor.peers]);
-  useEffect(() => { bottom.current?.scrollIntoView({ block: 'nearest' }); }, [messages, pending, editor.scene.id]);
+  const showLatest = useCallback(() => {
+    followLatest.current = true; setHasNewMessages(false);
+    const list = messageList.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, []);
+  useLayoutEffect(() => {
+    if (!isActive) return;
+    if (followLatest.current) showLatest();
+    else if (lastMessageId.current !== messages.at(-1)?.id) setHasNewMessages(true);
+    lastMessageId.current = messages.at(-1)?.id;
+  }, [messages, isActive, showLatest]);
   useEffect(() => {
     const active = request.current;
     if (active && active.scope.sceneId !== editor.scene.id) {
@@ -90,6 +121,7 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
     if (aiPrompt !== null) { request.current = active; setPending(active); }
     setError(''); setRetry(null);
     if (prompt.trim() === text) updatePrompt('');
+    followLatest.current = true;
     try {
       if (previousAttempt) chat.patch(messageId, { status: userMessage.status }); else chat.append(userMessage);
       if (aiPrompt === null) return;
@@ -164,17 +196,21 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
   const addressingCodex = codexPrompt(prompt) !== null;
 
   return <div className="assistant-panel">
-    <div className="assistant-heading"><span className="assistant-icon"><MessageCircle size={18}/></span><div><h2>Room chat</h2><p>みんなで相談。@codex で編集を依頼。</p></div></div>
-    <div className="assistant-messages" role="log" aria-label="共同編集チャット" aria-live="polite">
-      {visibleMessages.length === 0 && <div className="assistant-welcome"><p>この部屋のメンバーと、制作の相談を。<br/><strong>@codex</strong> で AI も会話に参加します。</p><div className="prompt-suggestions">{suggestions.map(text => <button key={text} onClick={() => updatePrompt(`@codex ${text}`)}><span>{text}</span><ChevronRight size={13}/></button>)}</div><small>AI の編集案は、依頼した人が確認して適用できます。</small></div>}
+    {visibleMessages.length === 0 && <div className="assistant-heading"><span className="assistant-icon"><MessageCircle size={18}/></span><div><h2>Room chat</h2><p>みんなで相談。@codex で編集を依頼。</p></div></div>}
+    <div ref={messageList} className="assistant-messages" role="log" aria-label="共同編集チャット" aria-live="polite" onScroll={event => {
+      const list = event.currentTarget;
+      followLatest.current = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+      if (followLatest.current) setHasNewMessages(false);
+    }}>
+      {visibleMessages.length === 0 && <div className="assistant-welcome"><p>この部屋のメンバーと、制作の相談を。<br/><strong>@codex</strong> で AI も会話に参加します。</p><div className="prompt-suggestions">{suggestions.map(text => <button key={text} onClick={() => { updatePrompt(`@codex ${text}`); composer.current?.focus(); }}><span>{text}</span><ChevronRight size={13}/></button>)}</div><small>AI の編集案は、依頼した人が確認して適用できます。</small></div>}
       {visibleMessages.map(message => {
         const own = message.authorId === editor.store.chatAuthorId;
         const targetScene = editor.store.snapshot().project?.scenes[message.scope.sceneId];
         const targets = message.proposal && targetScene ? proposalTargets(message.proposal, targetScene) : [];
-        return <div key={message.id} className={`chat-message ${message.role}`}>
+        return <div key={message.id} className={cn('chat-message', message.role)}>
         <div className="chat-author">{message.role === 'user' ? <><span className="chat-avatar" style={{ background: message.color }}>{message.authorName.slice(0, 1)}</span>{message.authorName}{own && <small>You</small>}</> : <><Sparkles size={12}/>Codex</>}<time dateTime={new Date(message.createdAt).toISOString()}>{new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
         {message.role === 'user' && <small className="muted">{message.scope.label}</small>}{message.scope.sceneId !== editor.scene.id && targetScene && <button className="chat-scene-link" onClick={() => onOpenScene(message.scope.sceneId)}>{targetScene.name} を開く<ChevronRight size={11}/></button>}<p>{message.content}</p>
-        {message.status === 'pending' && <small className="muted">Codex に依頼中…</small>}
+        {message.mentionsCodex && message.status === 'pending' && <ChatThinking active={isActive} authorName={message.authorName} onStop={pending?.messageId === message.id ? stop : undefined}/>}
         {message.status === 'cancelled' && <small className="muted">停止しました</small>}
         {message.status === 'failed' && <small className="muted">Codex への依頼に失敗しました</small>}
         {own && message.mentionsCodex && (message.status === 'failed' || message.status === 'cancelled') && <button className="chat-scene-link" onClick={() => { if (message.scope.sceneId !== editor.scene.id) onOpenScene(message.scope.sceneId); drafts.current.set(message.scope.sceneId, message.content); if (message.scope.sceneId === editor.scene.id) setPrompt(message.content); composer.current?.focus(); }}>依頼を入力欄に戻す</button>}
@@ -190,9 +226,8 @@ export function AssistantPanel({ onOpenScene, onEditMoment }: { onOpenScene: (sc
           })}</div>
         </div>}
       </div>; })}
-      {pending && <div className="assistant-thinking" title={pending.scope.label}><LoaderCircle size={13} className="loading-spinner"/><span>Codex が考えています…</span><button onClick={stop}>停止</button></div>}
-      <div ref={bottom}/>
     </div>
+    {hasNewMessages && <div className="assistant-jump"><button type="button" onClick={showLatest}><ArrowDown size={12}/>最新のメッセージへ</button></div>}
     <div className="assistant-composer">
       {error && <p className="inline-error" role="alert">{error}{retry && !pending && <button className="text-button" onClick={() => void send(retry.prompt, retry.messageId)}>再試行</button>}</p>}
       {editor.viewingPlayback && <p className="assistant-connection">AI への依頼・適用は編集画面で。<button className="text-button" onClick={onEditMoment}>この場面を編集</button></p>}
