@@ -1,0 +1,72 @@
+.assistant-panel .assistant-messages {
+  padding-block: 4px 12px;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+}
+
+.assistant-panel .assistant-thinking {
+  gap: 9px;
+  margin-top: 14px;
+  padding: 10px 0 2px;
+  color: var(--muted);
+}
+
+.assistant-thinking-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--color-field);
+  color: var(--accent);
+}
+
+.assistant-thinking-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.assistant-thinking-copy strong { color: #c6c6d3; font-size: 11px; font-weight: 500; }
+.assistant-thinking-copy > span { display: flex; align-items: center; gap: 5px; font-size: 11px; }
+.assistant-thinking-dots { display: inline-flex; align-items: center; gap: 3px; }
+.assistant-thinking-dot {
+  width: 3px;
+  height: 3px;
+  background: currentColor;
+  border-radius: 50%;
+  opacity: .45;
+  animation: chat-thinking 1.2s ease-in-out infinite;
+  animation-play-state: paused;
+}
+.assistant-thinking-dot:nth-child(2) { animation-delay: .16s; }
+.assistant-thinking-dot:nth-child(3) { animation-delay: .32s; }
+.assistant-thinking[data-animate="true"] .assistant-thinking-dot { animation-play-state: running; }
+.assistant-tab-content[hidden] .assistant-thinking-dot { animation-play-state: paused; }
+@keyframes chat-thinking { 0%, 65%, 100% { opacity: .35; } 30% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .assistant-thinking-dot { animation: none; opacity: .65; } }
+
+.assistant-panel .assistant-thinking button {
+  flex-shrink: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: #b3b3c2;
+  font-size: 11px;
+}
+.assistant-panel .assistant-thinking button:hover { background: var(--color-field); color: #e4e2ee; }
+.assistant-jump { display: flex; justify-content: center; padding: 4px 12px; }
+.assistant-jump button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--color-field);
+  color: #c6c6d3;
+  font-size: 11px;
+}
+.assistant-jump button:hover { border-color: var(--accent); }
+.assistant-composer form:focus-within { border-color: var(--accent); }

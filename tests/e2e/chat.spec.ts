@@ -2,6 +2,9 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 
 const fulfill = (route: Route, value: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) });
 const log = (page: Page) => page.getByRole('log', { name: '共同編集チャット', exact: true });
+const thinking = (page: Page) => log(page).locator('.assistant-thinking');
+const latest = (page: Page) => page.getByRole('button', { name: '最新のメッセージへ', exact: true });
+const distanceFromBottom = (page: Page) => log(page).evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop);
 async function open(page: Page, room: string, name: string, ai = true) {
   await page.addInitScript(name => localStorage.setItem('poietra-user-name', name), name);
   await page.route('**/api/health', route => fulfill(route, { ok: true, ai }));
@@ -20,11 +23,15 @@ test('people chat without AI availability, see real names and unread messages, a
   for (const page of [alice, bob]) await page.route('**/api/ai/propose', route => { calls++; return route.abort(); });
   try {
     await Promise.all([open(alice, room, 'Alice', false), open(bob, room, 'Bob', false)]);
+    await expect(alice.locator('.assistant-heading')).toBeVisible();
+    await expect(bob.locator('.assistant-heading')).toBeVisible();
     await bob.getByRole('button', { name: 'Design', exact: true }).click();
     await send(alice, '円は黄色がいいと思います');
+    await expect(alice.locator('.assistant-heading')).toHaveCount(0);
     await expect(bob.getByLabel('1 件の未読', { exact: true })).toBeVisible();
     await bob.getByRole('button', { name: 'Chat', exact: true }).click();
     await expect(log(bob).getByText('円は黄色がいいと思います', { exact: true })).toBeVisible();
+    await expect(bob.locator('.assistant-heading')).toHaveCount(0);
     await expect(log(bob).locator('.chat-author').first()).toContainText('Alice');
     await send(bob, 'いいですね！\n次の場面も相談しましょう');
     await expect(log(alice).getByText('いいですね！\n次の場面も相談しましょう', { exact: true })).toBeVisible();
@@ -33,6 +40,7 @@ test('people chat without AI availability, see real names and unread messages, a
     await alice.reload(); await expect(alice.getByText('Live', { exact: true })).toBeVisible();
     await alice.getByRole('button', { name: 'Chat', exact: true }).click();
     await expect(log(alice).locator('.chat-message.user')).toHaveCount(3);
+    await expect(alice.locator('.assistant-heading')).toHaveCount(0);
     await alice.getByRole('button', { name: 'Scene を追加', exact: true }).click();
     await expect(log(alice).getByText('円は黄色がいいと思います', { exact: true })).toBeVisible();
     await expect(log(alice).getByRole('button', { name: 'Scene 1 を開く', exact: true }).first()).toBeVisible();
@@ -56,11 +64,21 @@ test('@codex calls AI only on the sending browser, shares pending/reply/apply st
     await expect.poll(() => calls).toBe(1);
     expect(requests[0].prompt).toBe('円を中央にして');
     expect(requests[0].history).toContainEqual({ role: 'user', content: 'Bob: 黄色はこのままで、位置だけ変えよう' });
-    await expect(log(bob).getByText('Codex に依頼中…', { exact: true })).toBeVisible();
+    for (const page of [alice, bob]) {
+      await expect(thinking(page)).toHaveCount(1);
+      await expect(thinking(page).getByText('Codex', { exact: true })).toBeVisible();
+      await expect(thinking(page)).toHaveAttribute('aria-label', 'Codex が考えています · Alice の依頼');
+      await expect(thinking(page)).toContainText('考えています');
+      await expect(log(page).getByText('Codex に依頼中…', { exact: true })).toHaveCount(0);
+    }
+    await expect(thinking(alice).getByRole('button', { name: '停止', exact: true })).toBeVisible();
+    await expect(thinking(bob).getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
     await send(alice, '次は数式を出そう');
     await expect(log(bob).getByText('次は数式を出そう', { exact: true })).toBeVisible();
     await fulfill(response, proposal('円を中央に移動する案です。'));
     await expect(log(bob).getByText('円を中央に移動する案です。', { exact: true })).toBeVisible();
+    await expect(thinking(alice)).toHaveCount(0);
+    await expect(thinking(bob)).toHaveCount(0);
     await expect(log(bob).getByRole('button', { name: 'Apply edits', exact: true })).toHaveCount(0);
     await expect(log(bob).getByText('依頼した人が適用できます', { exact: true })).toBeVisible();
     await alice.reload(); await expect(alice.getByText('Live', { exact: true })).toBeVisible();
@@ -87,14 +105,115 @@ test('both collaborators can invoke Codex, and a peer request does not cancel th
     await Promise.all([open(alice, room, 'Alice'), open(bob, room, 'Bob')]);
     await send(alice, '@codex 円を中央にして'); await expect.poll(() => aCalls).toBe(1);
     await send(bob, '@codex 円の色を変えて'); await expect.poll(() => bCalls).toBe(1);
-    await expect(log(alice).getByText('Codex に依頼中…', { exact: true })).toHaveCount(2);
+    for (const page of [alice, bob]) {
+      await expect(thinking(page)).toHaveCount(2);
+      await expect(thinking(page).getByRole('button', { name: '停止', exact: true })).toHaveCount(1);
+    }
     await fulfill(bReply, { id: crypto.randomUUID(), message: 'どの色にしますか？', count: 0, changes: [] });
     await expect(log(alice).getByText('どの色にしますか？', { exact: true })).toBeVisible();
+    await expect(thinking(alice)).toHaveCount(1);
+    await expect(thinking(bob)).toHaveCount(1);
+    await expect(thinking(bob).getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
     await expect(alice.getByRole('button', { name: '停止', exact: true })).toBeVisible();
     await fulfill(aReply, proposal('中央に移動します。'));
     await expect(log(bob).getByText('中央に移動します。', { exact: true })).toBeVisible();
+    await expect(thinking(alice)).toHaveCount(0);
+    await expect(thinking(bob)).toHaveCount(0);
     expect(aCalls).toBe(1); expect(bCalls).toBe(1);
   } finally { await a.close(); await b.close(); }
+});
+
+test('shared waiting cards disappear for both collaborators when the sender stops or the request fails', async ({ browser }) => {
+  const a = await browser.newContext(), b = await browser.newContext();
+  const alice = await a.newPage(), bob = await b.newPage(), room = crypto.randomUUID(), replies: Route[] = [];
+  await alice.route('**/api/ai/propose', route => { replies.push(route); });
+  await bob.route('**/api/ai/propose', route => route.abort());
+  try {
+    await Promise.all([open(alice, room, 'Alice'), open(bob, room, 'Bob')]);
+    await send(alice, '@codex 停止する相談');
+    await expect.poll(() => replies.length).toBe(1);
+    await expect(thinking(bob)).toBeVisible();
+    await expect(thinking(bob).getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+    await thinking(alice).getByRole('button', { name: '停止', exact: true }).click();
+    for (const page of [alice, bob]) {
+      await expect(thinking(page)).toHaveCount(0);
+      await expect(log(page).getByText('停止しました', { exact: true })).toBeVisible();
+    }
+    await send(alice, '@codex 接続を確認する相談');
+    await expect.poll(() => replies.length).toBe(2);
+    await expect(thinking(bob)).toBeVisible();
+    await replies[1].fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'テスト用の接続エラーです。' }) });
+    for (const page of [alice, bob]) {
+      await expect(thinking(page)).toHaveCount(0);
+      await expect(log(page).getByText('Codex への依頼に失敗しました', { exact: true })).toBeVisible();
+      await expect(log(page).getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
+    }
+    await expect(alice.getByRole('alert')).toContainText('テスト用の接続エラー');
+  } finally { await a.close(); await b.close(); }
+});
+
+test('reading earlier chat stays in place; latest button, following replies, and sending restore the end', async ({ browser }) => {
+  const a = await browser.newContext(), b = await browser.newContext();
+  const alice = await a.newPage(), bob = await b.newPage(), room = crypto.randomUUID();
+  try {
+    await Promise.all([open(alice, room, 'Alice', false), open(bob, room, 'Bob', false)]);
+    for (let index = 1; index <= 10; index++) await send(bob, `制作メモ ${index}\nこの場面の位置と色を相談しています。\n動きの開始時刻も確認しましょう。`);
+    await expect(log(alice).locator('.chat-message.user')).toHaveCount(10);
+    await expect.poll(() => distanceFromBottom(alice)).toBeLessThan(2);
+    await log(alice).evaluate(element => { element.scrollTop = 80; });
+    await expect.poll(() => log(alice).evaluate(element => element.scrollTop)).toBe(80);
+    expect(await distanceFromBottom(alice)).toBeGreaterThan(200);
+    await send(bob, '履歴を読んでいる間の新しい相談');
+    await expect(log(alice).getByText('履歴を読んでいる間の新しい相談', { exact: true })).toHaveCount(1);
+    await expect(latest(alice)).toBeVisible();
+    expect(await log(alice).evaluate(element => element.scrollTop)).toBe(80);
+    await latest(alice).click();
+    await expect(latest(alice)).toHaveCount(0);
+    await expect.poll(() => distanceFromBottom(alice)).toBeLessThan(2);
+    await send(bob, '最新まで読んでいる人には続きが見えます');
+    await expect(log(alice).getByText('最新まで読んでいる人には続きが見えます', { exact: true })).toHaveCount(1);
+    await expect.poll(() => distanceFromBottom(alice)).toBeLessThan(2);
+    await expect(latest(alice)).toHaveCount(0);
+    await log(alice).evaluate(element => { element.scrollTop = 80; });
+    await alice.getByRole('button', { name: 'Design', exact: true }).click();
+    await send(bob, '編集を見ている間に届いた相談');
+    await expect(alice.getByLabel('1 件の未読', { exact: true })).toBeVisible();
+    await alice.getByRole('button', { name: 'Chat', exact: true }).click();
+    await expect(latest(alice)).toBeVisible();
+    expect(await log(alice).evaluate(element => element.scrollTop)).toBe(80);
+    await send(alice, '履歴を確認しました。ここから続けましょう。');
+    await expect.poll(() => distanceFromBottom(alice)).toBeLessThan(2);
+    await expect(latest(alice)).toHaveCount(0);
+  } finally { await a.close(); await b.close(); }
+});
+
+test('waiting animation pauses outside Chat and honors reduced motion while keeping the request alive', async ({ page }) => {
+  let reply!: Route, calls = 0;
+  await page.route('**/api/ai/propose', route => { calls++; reply = route; });
+  await open(page, crypto.randomUUID(), 'Alice');
+  await send(page, '@codex 動きを相談したい');
+  await expect.poll(() => calls).toBe(1);
+  const card = page.locator('.assistant-thinking'), dots = card.locator('.assistant-thinking-dot');
+  await expect(card).toHaveAttribute('data-animate', 'true');
+  await expect(dots).toHaveCount(3);
+  await expect.poll(() => dots.evaluateAll(elements => elements.some(element => element.getAnimations().some(animation => animation.playState === 'running')))).toBe(true);
+  await page.getByRole('button', { name: 'Design', exact: true }).click();
+  await expect(card).toHaveAttribute('data-animate', 'false');
+  await expect.poll(() => dots.evaluateAll(elements => elements.every(element => element.getAnimations().every(animation => animation.playState !== 'running')))).toBe(true);
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await expect(card).toHaveAttribute('data-animate', 'true');
+  for (let index = 1; index <= 7; index++) await send(page, `返答を待ちながらの制作メモ ${index}\n円の配置と表示時間を検討しています。`);
+  await expect(card).toHaveAttribute('data-animate', 'false');
+  await expect.poll(() => dots.evaluateAll(elements => elements.every(element => element.getAnimations().every(animation => animation.playState !== 'running')))).toBe(true);
+  await log(page).evaluate(element => { element.scrollTop = 0; });
+  await expect(card).toHaveAttribute('data-animate', 'true');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(() => dots.evaluateAll(elements => elements.every(element => getComputedStyle(element).animationName === 'none'))).toBe(true);
+  await expect(card.getByRole('button', { name: '停止', exact: true })).toBeVisible();
+  await fulfill(reply, { id: crypto.randomUUID(), message: '相談の続きをどうぞ。', count: 0, changes: [] });
+  await expect(log(page).getByText('相談の続きをどうぞ。', { exact: true })).toBeVisible();
+  await expect(card).toHaveCount(0);
+  expect(calls).toBe(1);
 });
 
 test('offline human messages merge on reconnection without changing the edit Undo stack or calling AI', async ({ browser }) => {
@@ -121,6 +240,7 @@ test('an interrupted request becomes stopped after reload and can be restored wi
   await page.reload(); await expect(page.getByText('Live', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(log(page).getByText('停止しました', { exact: true })).toBeVisible({ timeout: 15000 });
+  await expect(thinking(page)).toHaveCount(0);
   await log(page).getByRole('button', { name: '依頼を入力欄に戻す', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'チャットメッセージ', exact: true })).toHaveValue('@codex 円を黄色にして');
   expect(calls).toBe(1);
